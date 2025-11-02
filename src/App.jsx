@@ -1,9 +1,16 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Search, Plus, Grid3x3, List, Trash2, Edit2, X, BarChart3, Heart, Camera, TrendingUp, Package, Star, Gamepad2, Download, Upload } from 'lucide-react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { Search, Plus, Grid3x3, List, Trash2, Edit2, X, BarChart3, Heart, Camera, TrendingUp, Package, Star, Gamepad2, Download, Upload, RefreshCw, Cloud, CloudOff, LogOut, User } from 'lucide-react';
+import { supabase } from './supabase';
 
-const THEGAMESDB_API_KEY = 'd4f09c2009ff436d869f140a77b4caaf2523f5c2365906539e99a970a8642e4c';
-const THEGAMESDB_BASE_URL = 'https://api.thegamesdb.net/v1';
-const UPC_API_KEY = 'test'; // Use 'test' for trial, or get free key from https://www.upcitemdb.com/
+const SERVER_API = 'https://nzrmvrdbgdetdwfovmls.functions.supabase.co/barcode';
+const THEGAMESDB_BASE_URL = 'https://nzrmvrdbgdetdwfovmls.functions.supabase.co/tgdb';
+
+// Unique ID generator
+let uniqueIdCounter = 0;
+const generateUniqueId = () => {
+  uniqueIdCounter++;
+  return `${Date.now()}-${uniqueIdCounter}-${Math.random().toString(36).substr(2, 9)}`;
+};
 
 const CONSOLES = [
   { id: 10, name: 'PS1', fullName: 'PlayStation', aliases: ['PlayStation', 'PS1', 'PSX'] },
@@ -34,36 +41,75 @@ const CONSOLES = [
 
 const VERSIONS = ['PAL', 'NTSC', 'NTSC-J', 'JP'];
 
-// Console emoji icons
 const CONSOLE_ICONS = {
-  'PS1': '🎮',
-  'PS2': '🎮',
-  'PS3': '🎮',
-  'PS4': '🎮',
-  'PS5': '🎮',
-  'PSP': '🎮',
-  'PSP GO': '🎮',
-  'PS VITA': '🎮',
-  'GB': '🎲',
-  'GBC': '🎲',
-  'GBA': '🎲',
-  'NDS': '🎲',
-  '3DS': '🎲',
-  'NES': '🕹️',
-  'SNES': '🕹️',
-  'N64': '🕹️',
-  'GAMECUBE': '🎯',
-  'WII': '🎯',
-  'WII U': '🎯',
-  'SWITCH': '🎯',
-  'XBOX': '🎮',
-  'XBOX 360': '🎮',
-  'XBOX ONE': '🎮',
-  'XBOX SERIES X/S': '🎮'
+  'PS1': '🎮', 'PS2': '🎮', 'PS3': '🎮', 'PS4': '🎮', 'PS5': '🎮',
+  'PSP': '🎮', 'PSP GO': '🎮', 'PS VITA': '🎮',
+  'GB': '🎲', 'GBC': '🎲', 'GBA': '🎲', 'NDS': '🎲', '3DS': '🎲',
+  'NES': '🕹️', 'SNES': '🕹️', 'N64': '🕹️',
+  'GAMECUBE': '🎯', 'WII': '🎯', 'WII U': '🎯', 'SWITCH': '🎯',
+  'XBOX': '🎮', 'XBOX 360': '🎮', 'XBOX ONE': '🎮', 'XBOX SERIES X/S': '🎮'
 };
 
+// Memoized Game Card Component
+const GameCard = React.memo(({ game, onEdit, onDelete, onMove, isWishlist }) => {
+  return (
+    <div className={`bg-slate-800 rounded-sm border-4 ${isWishlist ? 'border-purple-700 hover:border-purple-600' : 'border-slate-700 hover:border-slate-600'} overflow-hidden transition-all shadow-lg group`}>
+      <div className="aspect-[3/4] bg-slate-900 relative overflow-hidden">
+        {game.cover_url ? (
+          <img src={game.cover_url} alt={game.title} className="w-full h-full object-cover" loading="lazy" />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center">
+            {isWishlist ? (
+              <Heart className="w-12 h-12 sm:w-16 sm:h-16 text-purple-700" />
+            ) : (
+              <Gamepad2 className="w-12 h-12 sm:w-16 sm:h-16 text-slate-700" />
+            )}
+          </div>
+        )}
+        {isWishlist && (
+          <div className="absolute top-2 right-2 bg-purple-600 rounded-full p-1 sm:p-1.5">
+            <Heart className="w-3 h-3 sm:w-4 sm:h-4 fill-white" />
+          </div>
+        )}
+        <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-70 transition-all flex items-center justify-center gap-1 sm:gap-2 opacity-0 group-hover:opacity-100">
+          <button
+            onClick={() => onEdit(game)}
+            className="p-1.5 sm:p-2 bg-blue-600 rounded-sm hover:bg-blue-700 transition-colors"
+          >
+            <Edit2 className="w-3 h-3 sm:w-4 sm:h-4" />
+          </button>
+          <button
+            onClick={() => onMove(game)}
+            className={`p-1.5 sm:p-2 rounded-sm hover:opacity-90 transition-colors ${isWishlist ? 'bg-green-600' : 'bg-purple-600'}`}
+          >
+            {isWishlist ? <Star className="w-3 h-3 sm:w-4 sm:h-4" /> : <Heart className="w-3 h-3 sm:w-4 sm:h-4" />}
+          </button>
+          <button
+            onClick={() => onDelete(game.id)}
+            className="p-1.5 sm:p-2 bg-red-600 rounded-sm hover:bg-red-700 transition-colors"
+          >
+            <Trash2 className="w-3 h-3 sm:w-4 sm:h-4" />
+          </button>
+        </div>
+      </div>
+      <div className="p-2 sm:p-3">
+        <h3 className="font-bold text-xs sm:text-sm mb-1 truncate font-mono">{game.title}</h3>
+        <div className="flex items-center gap-1 sm:gap-2 text-xs text-slate-400 font-mono">
+          <span>{CONSOLE_ICONS[game.console]}</span>
+          <span className="truncate">{game.console}</span>
+          {game.version && (
+            <span className={`ml-auto px-1.5 sm:px-2 py-0.5 rounded text-xs ${isWishlist ? 'bg-purple-700' : 'bg-slate-700'}`}>{game.version}</span>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+});
+
+GameCard.displayName = 'GameCard';
+
 function App() {
-  const [activeTab, setActiveTab] = useState('collection'); // collection, wishlist, stats
+  const [activeTab, setActiveTab] = useState('collection');
   const [games, setGames] = useState([]);
   const [wishlist, setWishlist] = useState([]);
   const [viewMode, setViewMode] = useState('grid');
@@ -75,55 +121,246 @@ function App() {
   const [showBarcodeModal, setShowBarcodeModal] = useState(false);
   const [barcodeInput, setBarcodeInput] = useState('');
   const [isScanningBarcode, setIsScanningBarcode] = useState(false);
-  const fileInputRef = useRef(null);
+  const [isUsingCamera, setIsUsingCamera] = useState(false);
+  const [isSearchingAPI, setIsSearchingAPI] = useState(false);
+  const [apiSearchResults, setApiSearchResults] = useState([]);
+  const csvInputRef = useRef(null);
+  const html5QrCodeRef = useRef(null);
   const [editingGame, setEditingGame] = useState(null);
   const [searchResults, setSearchResults] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
   const [addToWishlist, setAddToWishlist] = useState(false);
+  const [userId, setUserId] = useState(null);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncStatus, setSyncStatus] = useState('synced'); // 'synced', 'syncing', 'error'
+  const [showLoginModal, setShowLoginModal] = useState(false);  
+  const [username, setUsername] = useState('');               
+  const [loginForm, setLoginForm] = useState({ username: '', password: '' }); 
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [newGame, setNewGame] = useState({
     title: '',
     console: '',
     version: 'PAL',
-    coverUrl: '',
-    releaseDate: '',
-    apiId: null,
+    cover_url: '',
+    release_date: '',
+    api_id: null,
     barcode: ''
   });
 
-  // Load data from localStorage
+  // Initialize user session
   useEffect(() => {
-    const savedGames = localStorage.getItem('saveslot-collection');
-    const savedWishlist = localStorage.getItem('saveslot-wishlist');
-    
-    if (savedGames) {
-      try {
-        setGames(JSON.parse(savedGames));
-      } catch (error) {
-        console.log('Error loading collection:', error);
-      }
-    }
-    
-    if (savedWishlist) {
-      try {
-        setWishlist(JSON.parse(savedWishlist));
-      } catch (error) {
-        console.log('Error loading wishlist:', error);
-      }
-    }
+    checkAuth();
   }, []);
 
-  // Save to localStorage
-  useEffect(() => {
-    if (games.length > 0 || localStorage.getItem('saveslot-collection')) {
-      localStorage.setItem('saveslot-collection', JSON.stringify(games));
+const checkAuth = async () => {
+  const storedAuth = localStorage.getItem('saveslot-auth');
+  
+  if (storedAuth) {
+    try {
+      const auth = JSON.parse(storedAuth);
+      
+      // Verify user still exists in database
+      const { data, error } = await supabase
+        .from('users')
+        .select('id, username')
+        .eq('id', auth.userId)
+        .single();
+      
+      if (!error && data) {
+        setUserId(data.id);
+        setUsername(data.username);
+        await loadFromSupabase(data.id);
+      } else {
+        // Invalid auth, show login
+        localStorage.removeItem('saveslot-auth');
+        setShowLoginModal(true);
+      }
+    } catch (error) {
+      console.error('Auth check error:', error);
+      setShowLoginModal(true);
     }
-  }, [games]);
+  } else {
+    setShowLoginModal(true);
+  }
+};
+  // Load data from Supabase
+  const loadFromSupabase = async (uid) => {
+    try {
+      setIsSyncing(true);
+      setSyncStatus('syncing');
 
-  useEffect(() => {
-    if (wishlist.length > 0 || localStorage.getItem('saveslot-wishlist')) {
-      localStorage.setItem('saveslot-wishlist', JSON.stringify(wishlist));
+      // Load collection
+      const { data: collectionData, error: collectionError } = await supabase
+        .from('games')
+        .select('*')
+        .eq('user_id', uid)
+        .eq('is_wishlist', false)
+        .order('added_date', { ascending: false });
+
+      if (collectionError) throw collectionError;
+
+      // Load wishlist
+      const { data: wishlistData, error: wishlistError } = await supabase
+        .from('games')
+        .select('*')
+        .eq('user_id', uid)
+        .eq('is_wishlist', true)
+        .order('added_date', { ascending: false });
+
+      if (wishlistError) throw wishlistError;
+
+      setGames(collectionData || []);
+      setWishlist(wishlistData || []);
+      setSyncStatus('synced');
+    } catch (error) {
+      console.error('Error loading from Supabase:', error);
+      setSyncStatus('error');
+      
+      // Fallback to localStorage
+      const savedGames = localStorage.getItem('saveslot-collection');
+      const savedWishlist = localStorage.getItem('saveslot-wishlist');
+      
+      if (savedGames) {
+        try {
+          setGames(JSON.parse(savedGames));
+        } catch (e) {
+          console.error('Error parsing saved games:', e);
+        }
+      }
+      
+      if (savedWishlist) {
+        try {
+          setWishlist(JSON.parse(savedWishlist));
+        } catch (e) {
+          console.error('Error parsing saved wishlist:', e);
+        }
+      }
+    } finally {
+      setIsSyncing(false);
     }
-  }, [wishlist]);
+  };
+
+
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    setIsLoggingIn(true);
+
+    try {
+      // Check credentials
+      const { data, error } = await supabase
+        .from('users')
+        .select('id, username, password')
+        .eq('username', loginForm.username)
+        .single();
+
+      if (error || !data) {
+        alert('Username non trovato');
+        setIsLoggingIn(false);
+        return;
+      }
+
+      // Simple password check (in production, use bcrypt or similar)
+      if (data.password !== loginForm.password) {
+        alert('Password errata');
+        setIsLoggingIn(false);
+        return;
+      }
+
+      // Save auth to localStorage
+      const auth = {
+        userId: data.id,
+        username: data.username
+      };
+      localStorage.setItem('saveslot-auth', JSON.stringify(auth));
+
+      setUserId(data.id);
+      setUsername(data.username);
+      setShowLoginModal(false);
+      setLoginForm({ username: '', password: '' });
+
+      // Load user's data
+      await loadFromSupabase(data.id);
+    } catch (error) {
+      console.error('Login error:', error);
+      alert('Errore durante il login. Riprova.');
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
+
+  const handleLogout = () => {
+    if (window.confirm('Vuoi davvero disconnetterti?')) {
+      localStorage.removeItem('saveslot-auth');
+      setUserId(null);
+      setUsername('');
+      setGames([]);
+      setWishlist([]);
+      setShowLoginModal(true);
+    }
+  };
+
+  // Save to Supabase with debouncing
+  const saveToSupabase = useCallback(async (gamesData, wishlistData) => {
+    if (!userId) return;
+
+    try {
+      setSyncStatus('syncing');
+
+      // Prepare games for upsert
+      const allGames = [
+        ...gamesData.map(g => ({
+          ...g,
+          user_id: userId,
+          is_wishlist: false,
+          added_date: g.added_date || new Date().toISOString()
+        })),
+        ...wishlistData.map(g => ({
+          ...g,
+          user_id: userId,
+          is_wishlist: true,
+          added_date: g.added_date || new Date().toISOString()
+        }))
+      ];
+
+      // Delete all existing games for this user
+      await supabase
+        .from('games')
+        .delete()
+        .eq('user_id', userId);
+
+      // Insert new games
+      if (allGames.length > 0) {
+        const { error } = await supabase
+          .from('games')
+          .insert(allGames);
+
+        if (error) throw error;
+      }
+
+      setSyncStatus('synced');
+      
+      // Also save to localStorage as backup
+      localStorage.setItem('saveslot-collection', JSON.stringify(gamesData));
+      localStorage.setItem('saveslot-wishlist', JSON.stringify(wishlistData));
+    } catch (error) {
+      console.error('Error saving to Supabase:', error);
+      setSyncStatus('error');
+      
+      // Save to localStorage as fallback
+      localStorage.setItem('saveslot-collection', JSON.stringify(gamesData));
+      localStorage.setItem('saveslot-wishlist', JSON.stringify(wishlistData));
+    }
+  }, [userId]);
+
+  // Debounced save effect
+  useEffect(() => {
+    const timeoutId = setTimeout(() => {
+      if (userId) {
+        saveToSupabase(games, wishlist);
+      }
+    }, 1000);
+    return () => clearTimeout(timeoutId);
+  }, [games, wishlist, userId, saveToSupabase]);
 
   const searchGames = async (query, platformId) => {
     if (!query || query.length < 2) {
@@ -134,38 +371,43 @@ function App() {
     setIsSearching(true);
     try {
       const params = new URLSearchParams({
-        apikey: THEGAMESDB_API_KEY,
         name: query,
-        include: 'boxart',
-        ...(platformId && { filter: `platform:${platformId}` })
+        include: 'boxart'
       });
-
-      const corsProxy = 'https://corsproxy.io/?';
-      const apiUrl = `${THEGAMESDB_BASE_URL}/Games/ByGameName?${params}`;
-      const response = await fetch(`${corsProxy}${encodeURIComponent(apiUrl)}`);
-      const data = await response.json();
+      
+      if (platformId) params.set('platform', String(platformId));
+      
+      const apiUrl = `${THEGAMESDB_BASE_URL}/Games/ByGameName?${params.toString()}`;
+      
+      const res = await fetch(apiUrl, { headers: { Accept: 'application/json' } });
+      const ctype = res.headers.get('content-type') || '';
+      const txt = await res.text();
+      if (!res.ok) throw new Error(`TGDB HTTP ${res.status}: ${txt.slice(0,150)}`);
+      if (!ctype.includes('application/json')) throw new Error('TGDB: risposta non-JSON');
+      
+      const data = JSON.parse(txt);
 
       if (data.data && data.data.games) {
         const baseImageUrl = data.include?.boxart?.base_url?.large || 'https://cdn.thegamesdb.net/images/original/';
         
         const gamesWithImages = data.data.games.map(game => {
-          let coverUrl = '';
+          let cover_url = '';
           
           if (data.include?.boxart?.data && data.include.boxart.data[game.id]) {
             const boxartArray = data.include.boxart.data[game.id];
             const frontBoxart = boxartArray.find(img => img.side === 'front');
             if (frontBoxart) {
-              coverUrl = `${baseImageUrl}${frontBoxart.filename}`;
+              cover_url = `${baseImageUrl}${frontBoxart.filename}`;
             }
           }
           
-          // Fix platform display - find console by matching platform ID
           const matchedConsole = CONSOLES.find(c => c.id === game.platform);
           
           return {
             ...game,
-            coverUrl,
-            platformName: matchedConsole ? matchedConsole.fullName : 'Unknown Platform'
+            cover_url,
+            platformName: matchedConsole ? matchedConsole.fullName : 'Unknown Platform',
+            uniqueKey: generateUniqueId()
           };
         });
         
@@ -175,55 +417,324 @@ function App() {
       }
     } catch (error) {
       console.error('Error searching games:', error);
+      alert('Errore durante la ricerca. Riprova tra qualche secondo.');
       setSearchResults([]);
     } finally {
       setIsSearching(false);
     }
   };
 
+  const searchAPIForCover = async (title, consoleShortName) => {
+    setIsSearchingAPI(true);
+    setApiSearchResults([]);
+    
+    try {
+      const consoleObj = CONSOLES.find(c => c.name === consoleShortName);
+      const params = new URLSearchParams({
+        name: title,
+        include: 'boxart'
+      });
+
+      if (consoleObj?.id) params.set('platform', String(consoleObj?.id));
+
+      const apiUrl = `${THEGAMESDB_BASE_URL}/Games/ByGameName?${params}`;
+      const res = await fetch(apiUrl, { headers: { Accept: 'application/json' } });
+      const ctype = res.headers.get('content-type') || '';
+      const txt = await res.text();
+      if (!res.ok) throw new Error(`TGDB HTTP ${res.status}: ${txt.slice(0,150)}`);
+      if (!ctype.includes('application/json')) throw new Error('TGDB: risposta non-JSON');
+      
+      const data = JSON.parse(txt);
+
+      if (data.data && data.data.games && data.data.games.length > 0) {
+        const baseImageUrl = data.include?.boxart?.base_url?.large || 'https://cdn.thegamesdb.net/images/original/';
+        
+        const gamesWithImages = data.data.games.map(game => {
+          let cover_url = '';
+          
+          if (data.include?.boxart?.data && data.include.boxart.data[game.id]) {
+            const boxartArray = data.include.boxart.data[game.id];
+            const frontBoxart = boxartArray.find(img => img.side === 'front');
+            if (frontBoxart) {
+              cover_url = `${baseImageUrl}${frontBoxart.filename}`;
+            }
+          }
+          
+          const matchedConsole = CONSOLES.find(c => c.id === game.platform);
+          
+          return {
+            ...game,
+            cover_url,
+            platformName: matchedConsole ? matchedConsole.fullName : 'Unknown Platform',
+            uniqueKey: generateUniqueId()
+          };
+        });
+        
+        setApiSearchResults(gamesWithImages);
+        
+        if (gamesWithImages.length === 0) {
+          alert('Nessun risultato trovato su TheGamesDB. Prova a modificare il titolo o rimuovi il filtro console.');
+        }
+      } else {
+        setApiSearchResults([]);
+        alert('Nessun risultato trovato su TheGamesDB. Prova a:\n- Modificare il titolo\n- Rimuovere il filtro console\n- Cercare solo parte del nome');
+      }
+    } catch (error) {
+      console.error('Error searching API:', error);
+      alert(`Errore durante la ricerca: ${error.message}\n\nL'API potrebbe essere temporaneamente non disponibile o hai raggiunto il limite di richieste. Attendi qualche secondo e riprova.`);
+    } finally {
+      setIsSearchingAPI(false);
+    }
+  };
+
+  const selectCoverFromAPI = (game) => {
+    if (editingGame) {
+      setEditingGame({
+        ...editingGame,
+        cover_url: game.cover_url,
+        release_date: game.release_date || editingGame.release_date,
+        api_id: game.id
+      });
+    }
+    setApiSearchResults([]);
+  };
+
+  // Improved barcode search with TGDB fallback
   const searchByBarcode = async (barcode) => {
     setIsScanningBarcode(true);
     try {
-      const corsProxy = 'https://corsproxy.io/?';
-      const apiUrl = `https://api.upcitemdb.com/prod/trial/lookup?upc=${barcode}`;
-      const response = await fetch(`${corsProxy}${encodeURIComponent(apiUrl)}`);
+      // First try UPC lookup
+      const response = await fetch(`${SERVER_API}?upc=${barcode}`);
       const data = await response.json();
+
+      let gameTitle = null;
+      let detectedConsole = '';
 
       if (data.items && data.items.length > 0) {
         const item = data.items[0];
-        const title = item.title;
+        gameTitle = item.title;
         
-        // Try to detect console from title or category
-        let detectedConsole = '';
+        const searchText = (gameTitle + ' ' + (item.description || '')).toLowerCase();
+        
         for (const console of CONSOLES) {
-          if (console.aliases.some(alias => title.toLowerCase().includes(alias.toLowerCase()))) {
-            detectedConsole = console.name;
-            break;
+          for (const alias of console.aliases) {
+            if (searchText.includes(alias.toLowerCase())) {
+              detectedConsole = console.name;
+              break;
+            }
           }
+          if (detectedConsole) break;
         }
-        
-        setNewGame({
-          ...newGame,
-          title: title,
-          console: detectedConsole,
-          barcode: barcode,
-          coverUrl: item.images?.[0] || ''
-        });
-        
-        alert(`Gioco trovato: ${title}${detectedConsole ? `\nConsole rilevata: ${detectedConsole}` : ''}`);
       } else {
-        alert('Nessun prodotto trovato per questo barcode. Inserisci i dati manualmente.');
-        setNewGame({ ...newGame, barcode: barcode });
+        // UPC not found - try to extract game info from barcode patterns
+        // Many game barcodes have patterns we can use
+        alert('Barcode non trovato nel database UPC.\n\nInserisci manualmente il titolo del gioco per cercarlo.');
+        setShowBarcodeModal(false);
+        setShowAddModal(true);
+        return;
+      }
+
+      if (gameTitle) {
+        if (detectedConsole) {
+          const consoleObj = CONSOLES.find(c => c.name === detectedConsole);
+          await searchGames(gameTitle, consoleObj?.id);
+        } else {
+          await searchGames(gameTitle);
+        }
+
+        setShowBarcodeModal(false);
+        setBarcodeInput('');
+        setShowAddModal(true);
+      } else {
+        alert('Impossibile identificare il gioco da questo barcode. Prova la ricerca manuale.');
       }
     } catch (error) {
-      console.error('Error searching barcode:', error);
-      alert('Errore nella ricerca del barcode. Inserisci i dati manualmente.');
-      setNewGame({ ...newGame, barcode: barcode });
+      console.error('Error scanning barcode:', error);
+      alert('Errore durante la scansione del barcode. Prova la ricerca manuale.');
+      setShowBarcodeModal(false);
+      setShowAddModal(true);
     } finally {
       setIsScanningBarcode(false);
-      setShowBarcodeModal(false);
+      stopCamera();
     }
   };
+
+  const startCamera = () => {
+    setIsUsingCamera(true);
+    
+    setTimeout(async () => {
+      try {
+        if (window.Html5Qrcode) {
+          initializeScanner();
+        } else {
+          const script = document.createElement('script');
+          script.src = 'https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js';
+          script.async = false;
+          
+          script.onload = () => {
+            console.log('html5-qrcode library loaded');
+            initializeScanner();
+          };
+          
+          script.onerror = () => {
+            console.error('Failed to load html5-qrcode library');
+            alert('Errore nel caricamento dello scanner. Inserisci il barcode manualmente.');
+            setIsUsingCamera(false);
+          };
+          
+          document.head.appendChild(script);
+        }
+      } catch (error) {
+        console.error('Error in startCamera:', error);
+        alert('Errore nell\'inizializzazione della fotocamera.');
+        setIsUsingCamera(false);
+      }
+    }, 100);
+  };
+
+  const initializeScanner = async () => {
+    try {
+      const Html5Qrcode = window.Html5Qrcode;
+      
+      if (!Html5Qrcode) {
+        throw new Error('Html5Qrcode not available');
+      }
+
+      const html5QrCode = new Html5Qrcode("barcode-reader");
+      html5QrCodeRef.current = html5QrCode;
+      
+      const qrCodeSuccessCallback = (decodedText) => {
+        console.log('Barcode detected:', decodedText);
+        setBarcodeInput(decodedText);
+        stopCamera();
+        searchByBarcode(decodedText);
+      };
+      
+      const config = {
+        fps: 10,
+        qrbox: { width: 250, height: 150 }
+      };
+      
+      await html5QrCode.start(
+        { facingMode: "environment" },
+        config,
+        qrCodeSuccessCallback,
+        (errorMessage) => {
+          // Ignore continuous scanning errors
+        }
+      );
+      
+      console.log('Scanner started successfully');
+    } catch (err) {
+      console.error('Error initializing scanner:', err);
+      alert('Impossibile accedere alla fotocamera. Verifica i permessi nel browser e riprova.');
+      setIsUsingCamera(false);
+    }
+  };
+
+  const stopCamera = async () => {
+    if (html5QrCodeRef.current) {
+      try {
+        await html5QrCodeRef.current.stop();
+        html5QrCodeRef.current.clear();
+        html5QrCodeRef.current = null;
+        console.log('Scanner stopped');
+      } catch (error) {
+        console.error('Error stopping camera:', error);
+      }
+    }
+    setIsUsingCamera(false);
+  };
+
+  const selectGameFromSearch = (game) => {
+    const matchedConsole = CONSOLES.find(c => c.id === game.platform);
+    
+    setNewGame({
+      title: game.game_title,
+      console: matchedConsole ? matchedConsole.name : '',
+      version: 'PAL',
+      cover_url: game.cover_url || '',
+      release_date: game.release_date || '',
+      api_id: game.id,
+      barcode: ''
+    });
+    setSearchResults([]);
+  };
+
+  const addGame = () => {
+    if (!newGame.title || !newGame.console) {
+      alert('Inserisci almeno titolo e console!');
+      return;
+    }
+
+    const gameToAdd = {
+      id: generateUniqueId(),
+      ...newGame,
+      added_date: new Date().toISOString()
+    };
+
+    if (addToWishlist) {
+      setWishlist([...wishlist, gameToAdd]);
+    } else {
+      setGames([...games, gameToAdd]);
+    }
+
+    setShowAddModal(false);
+    setNewGame({
+      title: '',
+      console: '',
+      version: 'PAL',
+      cover_url: '',
+      release_date: '',
+      api_id: null,
+      barcode: ''
+    });
+    setSearchResults([]);
+    setAddToWishlist(false);
+  };
+
+  const deleteGame = useCallback((id, is_wishlist = false) => {
+    if (window.confirm('Sei sicuro di voler eliminare questo gioco?')) {
+      if (is_wishlist) {
+        setWishlist(prev => prev.filter(g => g.id !== id));
+      } else {
+        setGames(prev => prev.filter(g => g.id !== id));
+      }
+    }
+  }, []);
+
+  const startEdit = (game, is_wishlist = false) => {
+    setEditingGame({ ...game, is_wishlist });
+    setShowEditModal(true);
+    setApiSearchResults([]);
+  };
+
+  const saveEdit = () => {
+    if (!editingGame.title || !editingGame.console) {
+      alert('Inserisci almeno titolo e console!');
+      return;
+    }
+
+    if (editingGame.is_wishlist) {
+      setWishlist(wishlist.map(g => g.id === editingGame.id ? editingGame : g));
+    } else {
+      setGames(games.map(g => g.id === editingGame.id ? editingGame : g));
+    }
+
+    setShowEditModal(false);
+    setEditingGame(null);
+    setApiSearchResults([]);
+  };
+
+  const moveToCollection = useCallback((game) => {
+    setWishlist(prev => prev.filter(g => g.id !== game.id));
+    setGames(prev => [...prev, { ...game, added_date: new Date().toISOString() }]);
+  }, []);
+
+  const moveToWishlist = useCallback((game) => {
+    setGames(prev => prev.filter(g => g.id !== game.id));
+    setWishlist(prev => [...prev, game]);
+  }, []);
 
   const exportCSV = () => {
     const csvContent = [
@@ -247,13 +758,11 @@ function App() {
     if (!file) return;
 
     const reader = new FileReader();
-    reader.onload = async (e) => {
+    reader.onload = (e) => {
       const text = e.target.result;
       const lines = text.split('\n');
       const importedGames = [];
-      let coversFound = 0;
 
-      // Import without fetching covers first for speed
       for (let i = 1; i < lines.length; i++) {
         const line = lines[i].trim();
         if (!line) continue;
@@ -271,13 +780,13 @@ function App() {
 
         if (fields.length >= 3) {
           importedGames.push({
-            id: Date.now().toString() + Math.random(),
+            id: generateUniqueId(),
             title: fields[0],
             console: fields[1],
             version: fields[2],
-            coverUrl: '',
-            releaseDate: '',
-            apiId: null,
+            cover_url: '',
+            release_date: '',
+            api_id: null,
             barcode: ''
           });
         }
@@ -285,602 +794,696 @@ function App() {
 
       if (importedGames.length > 0) {
         setGames([...games, ...importedGames]);
-        alert(`${importedGames.length} giochi importati con successo!\n\nLe copertine possono essere aggiunte individualmente modificando ogni gioco.`);
+        alert(`${importedGames.length} giochi importati con successo!\n\nPuoi aggiungere le copertine modificando ogni gioco e usando "Search API".`);
       }
     };
     reader.readAsText(file);
     event.target.value = '';
   };
 
-  const selectGameFromSearch = (game) => {
-    const console = CONSOLES.find(c => c.id === game.platform);
-    setNewGame({
-      title: game.game_title,
-      console: console ? console.name : '',
-      version: 'PAL',
-      coverUrl: game.coverUrl,
-      releaseDate: game.release_date || '',
-      apiId: game.id,
-      barcode: ''
+  const filteredGames = useMemo(() => {
+    return games.filter(game => {
+      const matchesSearch = game.title.toLowerCase().includes(searchTerm.toLowerCase());
+      const matchesConsole = !filterConsole || game.console === filterConsole;
+      const matchesVersion = !filterVersion || game.version === filterVersion;
+      return matchesSearch && matchesConsole && matchesVersion;
     });
-    setSearchResults([]);
-  };
+  }, [games, searchTerm, filterConsole, filterVersion]);
 
-  const addGame = () => {
-    if (!newGame.title || !newGame.console) {
-      alert('Inserisci almeno titolo e console');
-      return;
-    }
-
-    const gameToAdd = {
-      id: Date.now().toString(),
-      ...newGame
-    };
-
-    if (addToWishlist) {
-      setWishlist([...wishlist, gameToAdd]);
-    } else {
-      setGames([...games, gameToAdd]);
-    }
-    
-    setShowAddModal(false);
-    setAddToWishlist(false);
-    setNewGame({
-      title: '',
-      console: '',
-      version: 'PAL',
-      coverUrl: '',
-      releaseDate: '',
-      apiId: null,
-      barcode: ''
+  const filteredWishlist = useMemo(() => {
+    return wishlist.filter(game => {
+      const matchesSearch = game.title.toLowerCase().includes(searchTerm.toLowerCase());
+      const matchesConsole = !filterConsole || game.console === filterConsole;
+      const matchesVersion = !filterVersion || game.version === filterVersion;
+      return matchesSearch && matchesConsole && matchesVersion;
     });
-    setSearchResults([]);
-  };
+  }, [wishlist, searchTerm, filterConsole, filterVersion]);
 
-  const deleteGame = (id, fromWishlist = false) => {
-    if (window.confirm('Sei sicuro di voler eliminare questo gioco?')) {
-      if (fromWishlist) {
-        setWishlist(wishlist.filter(g => g.id !== id));
-      } else {
-        setGames(games.filter(g => g.id !== id));
-      }
-    }
-  };
-
-  const moveToCollection = (game) => {
-    setWishlist(wishlist.filter(g => g.id !== game.id));
-    setGames([...games, { ...game, id: Date.now().toString() }]);
-  };
-
-  const startEdit = (game, fromWishlist = false) => {
-    setEditingGame({ ...game, isFromWishlist: fromWishlist });
-    setShowEditModal(true);
-  };
-
-  const saveEdit = () => {
-    if (!editingGame.title || !editingGame.console) {
-      alert('Inserisci almeno titolo e console');
-      return;
-    }
-
-    if (editingGame.isFromWishlist) {
-      setWishlist(wishlist.map(g => 
-        g.id === editingGame.id ? { ...editingGame, isFromWishlist: undefined } : g
-      ));
-    } else {
-      setGames(games.map(g => 
-        g.id === editingGame.id ? { ...editingGame, isFromWishlist: undefined } : g
-      ));
-    }
-    
-    setShowEditModal(false);
-    setEditingGame(null);
-  };
-
-  const currentList = activeTab === 'wishlist' ? wishlist : games;
-  const filteredGames = currentList.filter(game => {
-    const matchesSearch = game.title.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesConsole = !filterConsole || game.console === filterConsole;
-    const matchesVersion = !filterVersion || game.version === filterVersion;
-    return matchesSearch && matchesConsole && matchesVersion;
-  });
-
-  const consoleCount = (consoleName) => {
-    return games.filter(g => g.console === consoleName).length;
-  };
-
-  // Statistics calculations
   const totalGames = games.length;
   const totalWishlist = wishlist.length;
-  const consoleStats = CONSOLES.map(console => ({
-    name: console.name,
-    fullName: console.fullName,
-    count: games.filter(g => g.console === console.name).length
-  })).filter(stat => stat.count > 0).sort((a, b) => b.count - a.count);
+  
+  const consoleStats = useMemo(() => {
+    return CONSOLES.map(console => ({
+      name: console.fullName,
+      shortName: console.name,
+      count: games.filter(g => g.console === console.name).length
+    })).filter(stat => stat.count > 0);
+  }, [games]);
 
-  const topConsole = consoleStats[0];
+  const versionStats = useMemo(() => {
+    return VERSIONS.map(version => ({
+      name: version,
+      count: games.filter(g => g.version === version).length
+    })).filter(stat => stat.count > 0);
+  }, [games]);
 
-  return (
-    <div className="min-h-screen bg-gradient-to-br from-indigo-950 via-purple-950 to-slate-900 flex flex-col">
-      {/* Floppy Disk themed header */}
-      <div className="border-b-4 border-slate-700 bg-gradient-to-br from-slate-800 via-slate-700 to-slate-800 shadow-2xl relative overflow-hidden">
-        {/* Metal shutter effect at top */}
-        <div className="absolute top-0 left-0 right-0 h-16 bg-gradient-to-b from-slate-900 to-transparent opacity-50"></div>
-        <div className="max-w-7xl mx-auto px-6 py-6 relative">
-          <div className="flex items-center gap-4 mb-4">
-            {/* Floppy disk icon */}
-            <div className="relative">
-              <div className="w-16 h-16 bg-slate-900 rounded-sm border-4 border-slate-600 shadow-xl relative overflow-hidden">
-                {/* Metal shutter */}
-                <div className="absolute top-0 left-0 right-0 h-4 bg-slate-800"></div>
-                {/* Label area */}
+const uniqueConsoles = [...new Set(games.map(g => g.console))].sort();
+  const uniqueVersions = [...new Set(games.map(g => g.version).filter(Boolean))].sort();
+
+  // Show login modal if not authenticated
+  if (showLoginModal && !userId) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white flex items-center justify-center p-4">
+        <div className="bg-slate-800 rounded-sm max-w-md w-full border-4 border-slate-600 shadow-2xl relative">
+          <div className="absolute top-0 left-0 right-0 h-4 bg-slate-900 rounded-t-sm"></div>
+          <div className="p-6 pt-8">
+            <div className="text-center mb-8">
+              <div className="w-16 h-16 mx-auto bg-slate-700 rounded-sm border-4 border-slate-600 shadow-xl relative overflow-hidden mb-4">
+                <div className="absolute top-0 left-0 right-0 h-3 bg-slate-950"></div>
                 <div className="absolute bottom-1 left-1 right-1 h-8 bg-white rounded-sm flex items-center justify-center">
                   <Gamepad2 className="w-5 h-5 text-slate-700" />
                 </div>
-                {/* Write protect notch */}
                 <div className="absolute top-1 right-1 w-2 h-3 bg-slate-950"></div>
               </div>
-            </div>
-            <div>
-              <h1 className="text-5xl font-bold text-white drop-shadow-lg" style={{fontFamily: 'monospace', letterSpacing: '0.1em'}}>
+              <h1 className="text-3xl font-black text-white font-mono mb-2">
                 💾 SAVE SLOT
               </h1>
-              <p className="text-slate-400 text-sm mt-1 font-mono">La tua collezione di videogiochi • File #{totalGames}</p>
+              <p className="text-slate-400 text-sm font-mono">v2.0 • User Authentication</p>
+            </div>
+
+            <form onSubmit={handleLogin} className="space-y-4">
+              <div>
+                <label className="block text-amber-400 text-sm font-semibold mb-2 font-mono">
+                  Username
+                </label>
+                <input
+                  type="text"
+                  value={loginForm.username}
+                  onChange={(e) => setLoginForm({ ...loginForm, username: e.target.value })}
+                  className="w-full px-4 py-3 bg-slate-700 text-white rounded-sm border-2 border-slate-600 focus:outline-none focus:border-amber-500 font-mono"
+                  placeholder="Enter username"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="block text-amber-400 text-sm font-semibold mb-2 font-mono">
+                  Password
+                </label>
+                <input
+                  type="password"
+                  value={loginForm.password}
+                  onChange={(e) => setLoginForm({ ...loginForm, password: e.target.value })}
+                  className="w-full px-4 py-3 bg-slate-700 text-white rounded-sm border-2 border-slate-600 focus:outline-none focus:border-amber-500 font-mono"
+                  placeholder="••••••••"
+                  required
+                />
+              </div>
+
+              <button
+                type="submit"
+                disabled={isLoggingIn}
+                className="w-full px-6 py-3 bg-amber-600 text-white rounded-sm hover:bg-amber-700 transition-all font-bold border-4 border-amber-500 font-mono disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isLoggingIn ? '⏳ LOGGING IN...' : '🔓 LOGIN'}
+              </button>
+            </form>
+
+            <div className="mt-6 pt-6 border-t border-slate-700">
+              <p className="text-slate-500 text-xs font-mono text-center">
+                Non hai l'account? Contatta Bluemoon.
+              </p>
             </div>
           </div>
-          
-          {/* Navigation Tabs - Floppy disk style */}
-          <div className="flex gap-2">
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white flex flex-col">
+      {/* Header */}
+      <div className="border-b-4 border-slate-700 bg-slate-900 shadow-2xl relative overflow-hidden">
+        <div className="absolute top-0 left-0 right-0 h-12 bg-gradient-to-b from-slate-950 to-transparent opacity-70"></div>
+        
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 sm:py-6 relative">
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-4 mb-4 sm:mb-6">
+            <div className="flex items-center gap-3 sm:gap-4">
+              <div className="relative">
+                <div className="w-12 h-12 sm:w-16 sm:h-16 bg-slate-800 rounded-sm border-4 border-slate-600 shadow-xl relative overflow-hidden">
+                  <div className="absolute top-0 left-0 right-0 h-3 sm:h-4 bg-slate-950"></div>
+                  <div className="absolute bottom-0.5 sm:bottom-1 left-0.5 sm:left-1 right-0.5 sm:right-1 h-6 sm:h-8 bg-white rounded-sm flex items-center justify-center">
+                    <Gamepad2 className="w-4 h-4 sm:w-5 sm:h-5 text-slate-700" />
+                  </div>
+                  <div className="absolute top-1 right-1 w-1.5 sm:w-2 h-2 sm:h-3 bg-slate-950"></div>
+                </div>
+              </div>
+              <div>
+                <h1 className="text-2xl sm:text-4xl font-black text-white tracking-tight font-mono flex items-center gap-2">
+                  💾 SAVE SLOT
+                </h1>
+                  <p className="text-slate-400 text-xs sm:text-sm font-mono hidden sm:flex items-center gap-2">
+                    v2.0 © 2025 • {username}'s File #{totalGames}
+                    {syncStatus === 'syncing' && <Cloud className="w-3 h-3 animate-pulse text-blue-400" />}
+                    {syncStatus === 'synced' && <Cloud className="w-3 h-3 text-green-400" />}
+                    {syncStatus === 'error' && <CloudOff className="w-3 h-3 text-red-400" />}
+                  </p>
+              </div>
+            </div>
+            
+            <div className="flex flex-wrap gap-2 justify-center sm:justify-end">
+              <button
+                onClick={handleLogout}
+                className="px-3 py-2 sm:px-4 sm:py-2 bg-slate-700 text-white rounded-sm hover:bg-slate-600 transition-all font-bold border-4 border-slate-600 hover:border-slate-500 flex items-center gap-2 font-mono text-xs sm:text-sm"
+                title={`Logged in as ${username}`}
+              >
+                <User className="w-3 h-3 sm:w-4 sm:h-4" />
+                <LogOut className="w-3 h-3 sm:w-4 sm:h-4" />
+              </button>
+              <button
+                onClick={() => setShowBarcodeModal(true)}
+                className="px-3 py-2 sm:px-4 sm:py-2 bg-blue-600 text-white rounded-sm hover:bg-blue-700 transition-all font-bold border-4 border-blue-500 hover:border-blue-400 shadow-lg flex items-center gap-2 font-mono text-xs sm:text-sm"
+              >
+                <Camera className="w-3 h-3 sm:w-4 sm:h-4" />
+                <span className="hidden sm:inline">SCAN</span>
+              </button>
+              <button
+                onClick={() => {
+                  setShowAddModal(true);
+                  setAddToWishlist(false);
+                }}
+                className="px-3 py-2 sm:px-4 sm:py-2 bg-amber-600 text-white rounded-sm hover:bg-amber-700 transition-all font-bold border-4 border-amber-500 hover:border-amber-400 shadow-lg flex items-center gap-2 font-mono text-xs sm:text-sm"
+              >
+                <Plus className="w-3 h-3 sm:w-4 sm:h-4" />
+                <span className="hidden sm:inline">ADD</span>
+              </button>
+              <button
+                onClick={exportCSV}
+                className="px-3 py-2 sm:px-4 sm:py-2 bg-slate-700 text-white rounded-sm hover:bg-slate-600 transition-all font-bold border-4 border-slate-600 hover:border-slate-500 flex items-center gap-2 font-mono text-xs sm:text-sm"
+              >
+                <Download className="w-3 h-3 sm:w-4 sm:h-4" />
+                <span className="hidden sm:inline">CSV</span>
+              </button>
+              <button
+                onClick={() => csvInputRef.current?.click()}
+                className="px-3 py-2 sm:px-4 sm:py-2 bg-slate-700 text-white rounded-sm hover:bg-slate-600 transition-all font-bold border-4 border-slate-600 hover:border-slate-500 flex items-center gap-2 font-mono text-xs sm:text-sm"
+              >
+                <Upload className="w-3 h-3 sm:w-4 sm:h-4" />
+                <span className="hidden sm:inline">IMPORT</span>
+              </button>
+              <input
+                ref={csvInputRef}
+                type="file"
+                accept=".csv"
+                onChange={importCSV}
+                className="hidden"
+              />
+            </div>
+          </div>
+
+          <div className="flex gap-1 sm:gap-2 overflow-x-auto pb-2 sm:pb-0">
             <button
               onClick={() => setActiveTab('collection')}
-              className={`px-6 py-3 rounded-t-sm font-bold transition-all flex items-center gap-2 border-t-4 border-x-4 ${
-                activeTab === 'collection' 
-                  ? 'bg-slate-600 text-white border-slate-500 shadow-lg' 
+              className={`flex-1 sm:flex-none px-3 sm:px-6 py-2 sm:py-3 rounded-sm font-bold font-mono transition-all border-4 text-xs sm:text-sm whitespace-nowrap ${
+                activeTab === 'collection'
+                  ? 'bg-slate-700 text-white border-slate-600'
                   : 'bg-slate-800 text-slate-400 border-slate-700 hover:bg-slate-700'
               }`}
-              style={{fontFamily: 'monospace'}}
             >
-              <Package className="w-5 h-5" />
-              COLLECTION ({totalGames})
+              <Package className="w-4 h-4 sm:w-5 sm:h-5 inline mr-1 sm:mr-2" />
+              <span className="hidden sm:inline">COLLECTION</span> ({totalGames})
             </button>
             <button
               onClick={() => setActiveTab('wishlist')}
-              className={`px-6 py-3 rounded-t-sm font-bold transition-all flex items-center gap-2 border-t-4 border-x-4 ${
-                activeTab === 'wishlist' 
-                  ? 'bg-slate-600 text-white border-slate-500 shadow-lg' 
+              className={`flex-1 sm:flex-none px-3 sm:px-6 py-2 sm:py-3 rounded-sm font-bold font-mono transition-all border-4 text-xs sm:text-sm whitespace-nowrap ${
+                activeTab === 'wishlist'
+                  ? 'bg-slate-700 text-white border-slate-600'
                   : 'bg-slate-800 text-slate-400 border-slate-700 hover:bg-slate-700'
               }`}
-              style={{fontFamily: 'monospace'}}
             >
-              <Heart className="w-5 h-5" />
-              WISHLIST ({totalWishlist})
+              <Heart className="w-4 h-4 sm:w-5 sm:h-5 inline mr-1 sm:mr-2" />
+              <span className="hidden sm:inline">WISHLIST</span> ({totalWishlist})
             </button>
             <button
               onClick={() => setActiveTab('stats')}
-              className={`px-6 py-3 rounded-t-sm font-bold transition-all flex items-center gap-2 border-t-4 border-x-4 ${
-                activeTab === 'stats' 
-                  ? 'bg-slate-600 text-white border-slate-500 shadow-lg' 
+              className={`flex-1 sm:flex-none px-3 sm:px-6 py-2 sm:py-3 rounded-sm font-bold font-mono transition-all border-4 text-xs sm:text-sm whitespace-nowrap ${
+                activeTab === 'stats'
+                  ? 'bg-slate-700 text-white border-slate-600'
                   : 'bg-slate-800 text-slate-400 border-slate-700 hover:bg-slate-700'
               }`}
-              style={{fontFamily: 'monospace'}}
             >
-              <BarChart3 className="w-5 h-5" />
+              <BarChart3 className="w-4 h-4 sm:w-5 sm:h-5 inline mr-1 sm:mr-2" />
               STATS
             </button>
           </div>
         </div>
       </div>
 
-      <div className="max-w-7xl mx-auto p-6 flex-1">
-        {activeTab === 'stats' ? (
-          /* Statistics Dashboard */
-          <div className="space-y-6">
-            {/* Overview Cards - Floppy disk style */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              <div className="bg-slate-800 rounded-sm p-6 border-4 border-slate-600 shadow-xl relative">
-                <div className="absolute top-0 left-0 right-0 h-3 bg-slate-900"></div>
-                <div className="flex items-center justify-between mb-2 mt-2">
-                  <Package className="w-8 h-8 text-blue-400" />
-                  <span className="text-4xl font-bold text-white font-mono">{totalGames}</span>
-                </div>
-                <p className="text-slate-300 font-semibold font-mono">Giochi Totali</p>
-              </div>
-
-              <div className="bg-slate-800 rounded-sm p-6 border-4 border-slate-600 shadow-xl relative">
-                <div className="absolute top-0 left-0 right-0 h-3 bg-slate-900"></div>
-                <div className="flex items-center justify-between mb-2 mt-2">
-                  <Heart className="w-8 h-8 text-pink-400" />
-                  <span className="text-4xl font-bold text-white font-mono">{totalWishlist}</span>
-                </div>
-                <p className="text-slate-300 font-semibold font-mono">In Wishlist</p>
-              </div>
-
-              <div className="bg-slate-800 rounded-sm p-6 border-4 border-slate-600 shadow-xl relative">
-                <div className="absolute top-0 left-0 right-0 h-3 bg-slate-900"></div>
-                <div className="flex items-center justify-between mb-2 mt-2">
-                  <Star className="w-8 h-8 text-yellow-400" />
-                  <span className="text-4xl font-bold text-white font-mono">{consoleStats.length}</span>
-                </div>
-                <p className="text-slate-300 font-semibold font-mono">Console Diverse</p>
-              </div>
-            </div>
-
-            {/* Top Console */}
-            {topConsole && (
-              <div className="bg-slate-800 rounded-sm p-6 border-4 border-slate-600 shadow-xl relative">
-                <div className="absolute top-0 left-0 right-0 h-3 bg-slate-900"></div>
-                <div className="flex items-center gap-4 mt-2">
-                  <TrendingUp className="w-12 h-12 text-green-400" />
-                  <div>
-                    <p className="text-slate-400 text-sm font-semibold font-mono">CONSOLE PREFERITA</p>
-                    <h3 className="text-3xl font-bold text-white font-mono">{topConsole.fullName}</h3>
-                    <p className="text-slate-300 mt-1 font-mono">{topConsole.count} giochi nella collezione</p>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Console Breakdown */}
-            <div className="bg-slate-800 rounded-sm p-6 border-4 border-slate-600 shadow-xl relative">
-              <div className="absolute top-0 left-0 right-0 h-3 bg-slate-900"></div>
-              <h3 className="text-2xl font-bold text-white mb-4 flex items-center gap-2 mt-2 font-mono">
-                <BarChart3 className="w-6 h-6" />
-                Giochi per Console
-              </h3>
-              <div className="space-y-3">
-                {consoleStats.map(stat => (
-                  <div key={stat.name} className="bg-slate-700 rounded-sm p-4 border-2 border-slate-600">
-                    <div className="flex justify-between items-center mb-2">
-                      <span className="text-white font-semibold font-mono flex items-center gap-2">
-                        <span className="text-2xl">{CONSOLE_ICONS[stat.name] || '🎮'}</span>
-                        {stat.fullName}
-                      </span>
-                      <span className="text-blue-400 font-bold text-lg font-mono">{stat.count}</span>
-                    </div>
-                    <div className="w-full bg-slate-900 rounded-sm h-3 border border-slate-600">
-                      <div 
-                        className="bg-gradient-to-r from-blue-500 to-cyan-500 h-full rounded-sm transition-all"
-                        style={{ width: `${(stat.count / totalGames) * 100}%` }}
-                      ></div>
-                    </div>
-                    <p className="text-slate-400 text-sm mt-1 font-mono">
-                      {((stat.count / totalGames) * 100).toFixed(1)}% della collezione
-                    </p>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        ) : (
-          /* Collection/Wishlist View */
+      {/* Main Content - keeping rest of JSX the same, continuing... */}
+      <div className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-4 sm:py-8">
+        {activeTab !== 'stats' && (
           <>
-            {/* Toolbar - Two rows layout */}
-            <div className="bg-slate-800 rounded-sm p-4 mb-6 shadow-xl border-4 border-slate-600">
-              {/* First Row - Search and Filters */}
-              <div className="flex flex-col md:flex-row gap-4 mb-4">
-                <div className="flex-1 relative">
-                  <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-slate-400 w-5 h-5" />
-                  <input
-                    type="text"
-                    placeholder="Cerca giochi..."
-                    value={searchTerm}
-                    onChange={(e) => setSearchTerm(e.target.value)}
-                    className="w-full pl-10 pr-4 py-2 bg-slate-700 text-white rounded-sm border-2 border-slate-600 focus:outline-none focus:border-slate-500 font-mono"
-                  />
+            <div className="mb-4 sm:mb-6 bg-slate-800 p-3 sm:p-4 rounded-sm border-4 border-slate-700">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+                <div className="sm:col-span-2">
+                  <div className="relative">
+                    <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-slate-400 w-4 h-4 sm:w-5 sm:h-5" />
+                    <input
+                      type="text"
+                      placeholder="SEARCH GAMES..."
+                      value={searchTerm}
+                      onChange={(e) => setSearchTerm(e.target.value)}
+                      className="w-full pl-9 sm:pl-10 pr-4 py-2 bg-slate-700 text-white rounded-sm border-2 border-slate-600 focus:outline-none focus:border-slate-500 font-mono text-sm"
+                    />
+                  </div>
                 </div>
-
                 <select
                   value={filterConsole}
                   onChange={(e) => setFilterConsole(e.target.value)}
-                  className="px-4 py-2 bg-slate-700 text-white rounded-sm border-2 border-slate-600 focus:outline-none focus:border-slate-500 font-mono"
+                  className="px-3 sm:px-4 py-2 bg-slate-700 text-white rounded-sm border-2 border-slate-600 focus:outline-none focus:border-slate-500 font-mono text-xs sm:text-sm"
                 >
-                  <option value="">Tutte le Console</option>
+                  <option value="">ALL CONSOLES</option>
                   {CONSOLES.map(c => (
-                    <option key={c.name} value={c.name}>{c.name} ({consoleCount(c.name)})</option>
+                    <option key={c.name} value={c.name}>{c.fullName}</option>
                   ))}
                 </select>
-
                 <select
                   value={filterVersion}
                   onChange={(e) => setFilterVersion(e.target.value)}
-                  className="px-4 py-2 bg-slate-700 text-white rounded-sm border-2 border-slate-600 focus:outline-none focus:border-slate-500 font-mono"
+                  className="px-3 sm:px-4 py-2 bg-slate-700 text-white rounded-sm border-2 border-slate-600 focus:outline-none focus:border-slate-500 font-mono text-xs sm:text-sm"
                 >
-                  <option value="">Tutte le Versioni</option>
+                  <option value="">ALL VERSIONS</option>
                   {VERSIONS.map(v => (
                     <option key={v} value={v}>{v}</option>
                   ))}
                 </select>
-
+              </div>
+              
+              <div className="flex flex-col sm:flex-row justify-between items-center mt-3 sm:mt-4 gap-2">
+                <div className="text-slate-400 font-mono text-xs sm:text-sm">
+                  {activeTab === 'collection' 
+                    ? `${filteredGames.length} of ${totalGames} games`
+                    : `${filteredWishlist.length} of ${totalWishlist} items`
+                  }
+                </div>
                 <div className="flex gap-2">
                   <button
                     onClick={() => setViewMode('grid')}
-                    className={`p-2 rounded-sm border-2 ${viewMode === 'grid' ? 'bg-slate-600 border-slate-500 text-white' : 'bg-slate-700 border-slate-600 text-slate-400 hover:bg-slate-600'} transition-colors`}
+                    className={`p-2 rounded-sm border-2 ${
+                      viewMode === 'grid'
+                        ? 'bg-slate-700 border-slate-600 text-white'
+                        : 'bg-slate-800 border-slate-700 text-slate-400 hover:bg-slate-700'
+                    }`}
                   >
-                    <Grid3x3 className="w-5 h-5" />
+                    <Grid3x3 className="w-4 h-4 sm:w-5 sm:h-5" />
                   </button>
                   <button
                     onClick={() => setViewMode('list')}
-                    className={`p-2 rounded-sm border-2 ${viewMode === 'list' ? 'bg-slate-600 border-slate-500 text-white' : 'bg-slate-700 border-slate-600 text-slate-400 hover:bg-slate-600'} transition-colors`}
+                    className={`p-2 rounded-sm border-2 ${
+                      viewMode === 'list'
+                        ? 'bg-slate-700 border-slate-600 text-white'
+                        : 'bg-slate-800 border-slate-700 text-slate-400 hover:bg-slate-700'
+                    }`}
                   >
-                    <List className="w-5 h-5" />
+                    <List className="w-4 h-4 sm:w-5 sm:h-5" />
                   </button>
                 </div>
               </div>
-
-              {/* Second Row - Actions */}
-              <div className="flex flex-wrap gap-2">
-                <button
-                  onClick={() => setShowBarcodeModal(true)}
-                  className="px-4 py-2 bg-slate-700 text-white rounded-sm border-2 border-slate-600 hover:bg-slate-600 transition-all flex items-center gap-2 font-semibold font-mono"
-                >
-                  <Camera className="w-5 h-5" />
-                  Barcode
-                </button>
-
-                <button
-                  onClick={exportCSV}
-                  className="px-4 py-2 bg-slate-700 text-white rounded-sm border-2 border-slate-600 hover:bg-slate-600 transition-all flex items-center gap-2 font-semibold font-mono"
-                  title="Esporta CSV"
-                >
-                  <Download className="w-5 h-5" />
-                  CSV
-                </button>
-
-                <button
-                  onClick={() => fileInputRef.current?.click()}
-                  className="px-4 py-2 bg-slate-700 text-white rounded-sm border-2 border-slate-600 hover:bg-slate-600 transition-all flex items-center gap-2 font-semibold font-mono"
-                  title="Importa CSV"
-                >
-                  <Upload className="w-5 h-5" />
-                  Import
-                </button>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept=".csv"
-                  onChange={importCSV}
-                  className="hidden"
-                />
-
-                <button
-                  onClick={() => {
-                    setAddToWishlist(activeTab === 'wishlist');
-                    setShowAddModal(true);
-                  }}
-                  className="px-6 py-2 bg-slate-700 text-white rounded-sm hover:bg-slate-600 transition-all flex items-center gap-2 font-bold shadow-lg border-4 border-slate-600 font-mono ml-auto"
-                >
-                  <Plus className="w-5 h-5" />
-                  ADD
-                </button>
-              </div>
             </div>
 
-            <div className="mb-4 text-slate-300 font-semibold font-mono">
-              💾 {filteredGames.length} FILE TROVATI
-            </div>
-
-            {/* Games Display */}
-            {viewMode === 'grid' ? (
-              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6">
-                {filteredGames.map(game => (
-                  <div key={game.id} className="bg-slate-800 rounded-sm overflow-hidden shadow-lg hover:shadow-2xl transition-all hover:scale-105 group border-4 border-slate-600 hover:border-slate-500 relative">
-                    {/* Floppy disk metal shutter effect */}
-                    <div className="absolute top-0 left-0 right-0 h-3 bg-slate-900 z-10"></div>
-                    <div className="aspect-[2/3] bg-slate-700 relative">
-                      {game.coverUrl ? (
-                        <img src={game.coverUrl} alt={game.title} className="w-full h-full object-cover" />
-                      ) : (
-                        <div className="w-full h-full flex items-center justify-center text-slate-500">
-                          <Grid3x3 className="w-12 h-12" />
-                        </div>
-                      )}
-                      <div className="absolute top-4 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                        {activeTab === 'wishlist' && (
-                          <button
-                            onClick={() => moveToCollection(game)}
-                            className="p-2 bg-green-600 rounded-sm hover:bg-green-700 transition-colors border-2 border-green-500"
-                            title="Sposta in Collezione"
-                          >
-                            <Package className="w-4 h-4 text-white" />
-                          </button>
-                        )}
-                        <button
-                          onClick={() => startEdit(game, activeTab === 'wishlist')}
-                          className="p-2 bg-blue-600 rounded-sm hover:bg-blue-700 transition-colors border-2 border-blue-500"
-                        >
-                          <Edit2 className="w-4 h-4 text-white" />
-                        </button>
-                        <button
-                          onClick={() => deleteGame(game.id, activeTab === 'wishlist')}
-                          className="p-2 bg-red-600 rounded-sm hover:bg-red-700 transition-colors border-2 border-red-500"
-                        >
-                          <Trash2 className="w-4 h-4 text-white" />
-                        </button>
-                      </div>
-                    </div>
-                    <div className="p-4 bg-slate-800">
-                      <h3 className="text-white font-semibold text-sm mb-3 line-clamp-2 font-mono min-h-[2.5rem]">{game.title}</h3>
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs px-2 py-1 bg-slate-700 text-white rounded-sm font-bold border border-slate-600 font-mono">{game.console}</span>
-                        <span className="text-xs px-2 py-1 bg-slate-600 text-slate-300 rounded-sm border border-slate-500 font-mono">{game.version}</span>
-                      </div>
-                    </div>
+            {activeTab === 'collection' && (
+              <>
+                {filteredGames.length === 0 ? (
+                  <div className="text-center py-12 sm:py-16 bg-slate-800 rounded-sm border-4 border-slate-700">
+                    <Gamepad2 className="w-12 h-12 sm:w-16 sm:h-16 text-slate-600 mx-auto mb-4" />
+                    <p className="text-slate-400 font-mono text-sm sm:text-base mb-4">NO GAMES IN COLLECTION</p>
+                    <button
+                      onClick={() => setShowAddModal(true)}
+                      className="px-4 sm:px-6 py-2 bg-amber-600 text-white rounded-sm hover:bg-amber-700 transition-all font-bold border-4 border-amber-500 font-mono text-sm"
+                    >
+                      ADD YOUR FIRST GAME
+                    </button>
                   </div>
-                ))}
-              </div>
+                ) : (
+  <div className={viewMode === 'grid' 
+    ? "grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 sm:gap-4"
+    : "space-y-3"
+  }>
+    {filteredGames.map(game => (
+      viewMode === 'grid' ? (
+        <GameCard
+          key={game.id}
+          game={game}
+          onEdit={startEdit}
+          onDelete={deleteGame}
+          onMove={moveToWishlist}
+          isWishlist={false}
+        />
+      ) : (
+        <div key={game.id} className="bg-slate-800 rounded-sm border-4 border-slate-700 hover:border-slate-600 p-4 transition-all shadow-lg flex items-center gap-4">
+          <div className="w-16 h-24 bg-slate-900 rounded overflow-hidden flex-shrink-0">
+            {game.cover_url ? (
+              <img src={game.cover_url} alt={game.title} className="w-full h-full object-cover" loading="lazy" />
             ) : (
-              <div className="bg-slate-800 rounded-lg overflow-hidden shadow-xl border-2 border-slate-600">
-                <table className="w-full">
-                  <thead className="bg-slate-700">
-                    <tr>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-amber-400 uppercase tracking-wider">Gioco</th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-amber-400 uppercase tracking-wider">Console</th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-amber-400 uppercase tracking-wider">Versione</th>
-                      <th className="px-6 py-3 text-right text-xs font-medium text-amber-400 uppercase tracking-wider">Azioni</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-700">
-                    {filteredGames.map(game => (
-                      <tr key={game.id} className="hover:bg-slate-700 transition-colors">
-                        <td className="px-6 py-4">
-                          <div className="flex items-center gap-3">
-                            {game.coverUrl && (
-                              <img src={game.coverUrl} alt={game.title} className="w-12 h-16 object-cover rounded border-2 border-slate-600" />
-                            )}
-                            <span className="text-white font-medium">{game.title}</span>
-                          </div>
-                        </td>
-                        <td className="px-6 py-4">
-                          <span className="text-xs px-3 py-1 bg-amber-500 text-slate-900 rounded-full font-bold">{game.console}</span>
-                        </td>
-                        <td className="px-6 py-4">
-                          <span className="text-xs px-3 py-1 bg-slate-700 text-slate-300 rounded-full">{game.version}</span>
-                        </td>
-                        <td className="px-6 py-4 text-right">
-                          {activeTab === 'wishlist' && (
-                            <button
-                              onClick={() => moveToCollection(game)}
-                              className="p-2 text-green-400 hover:text-green-300 transition-colors inline-flex"
-                              title="Sposta in Collezione"
-                            >
-                              <Package className="w-4 h-4" />
-                            </button>
-                          )}
-                          <button
-                            onClick={() => startEdit(game, activeTab === 'wishlist')}
-                            className="p-2 text-blue-400 hover:text-blue-300 transition-colors inline-flex"
-                          >
-                            <Edit2 className="w-4 h-4" />
-                          </button>
-                          <button
-                            onClick={() => deleteGame(game.id, activeTab === 'wishlist')}
-                            className="p-2 text-red-400 hover:text-red-300 transition-colors inline-flex ml-2"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+              <div className="w-full h-full flex items-center justify-center">
+                <Gamepad2 className="w-8 h-8 text-slate-700" />
               </div>
+            )}
+          </div>
+          <div className="flex-1 min-w-0">
+            <h3 className="font-bold text-lg mb-1 truncate font-mono">{game.title}</h3>
+            <div className="flex items-center gap-2 text-sm text-slate-400 font-mono mb-2">
+              <span>{CONSOLE_ICONS[game.console]}</span>
+              <span>{game.console}</span>
+              {game.version && (
+                <span className="px-2 py-0.5 rounded text-xs bg-slate-700">{game.version}</span>
+              )}
+            </div>
+            {game.release_date && (
+              <p className="text-xs text-slate-500 font-mono">Released: {game.release_date}</p>
+            )}
+          </div>
+          <div className="flex gap-2 flex-shrink-0">
+            <button
+              onClick={() => startEdit(game, false)}
+              className="p-2 bg-blue-600 rounded-sm hover:bg-blue-700 transition-colors"
+            >
+              <Edit2 className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => moveToWishlist(game)}
+              className="p-2 bg-purple-600 rounded-sm hover:bg-purple-700 transition-colors"
+            >
+              <Heart className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => deleteGame(game.id, false)}
+              className="p-2 bg-red-600 rounded-sm hover:bg-red-700 transition-colors"
+            >
+              <Trash2 className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )
+    ))}
+  </div>
+                )}
+              </>
+            )}
+
+            {activeTab === 'wishlist' && (
+              <>
+                {filteredWishlist.length === 0 ? (
+                  <div className="text-center py-12 sm:py-16 bg-slate-800 rounded-sm border-4 border-slate-700">
+                    <Heart className="w-12 h-12 sm:w-16 sm:h-16 text-slate-600 mx-auto mb-4" />
+                    <p className="text-slate-400 font-mono text-sm sm:text-base mb-4">NO GAMES IN WISHLIST</p>
+                    <button
+                      onClick={() => {
+                        setShowAddModal(true);
+                        setAddToWishlist(true);
+                      }}
+                      className="px-4 sm:px-6 py-2 bg-purple-600 text-white rounded-sm hover:bg-purple-700 transition-all font-bold border-4 border-purple-500 font-mono text-sm"
+                    >
+                      ADD TO WISHLIST
+                    </button>
+                  </div>
+                ) : (
+<div className={viewMode === 'grid' 
+    ? "grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 sm:gap-4"
+    : "space-y-3"
+  }>
+    {filteredWishlist.map(game => (
+      viewMode === 'grid' ? (
+        <GameCard
+          key={game.id}
+          game={game}
+          onEdit={(g) => startEdit(g, true)}
+          onDelete={(id) => deleteGame(id, true)}
+          onMove={moveToCollection}
+          isWishlist={true}
+        />
+      ) : (
+        <div key={game.id} className="bg-slate-800 rounded-sm border-4 border-purple-700 hover:border-purple-600 p-4 transition-all shadow-lg flex items-center gap-4">
+          <div className="w-16 h-24 bg-slate-900 rounded overflow-hidden flex-shrink-0 relative">
+            {game.cover_url ? (
+              <img src={game.cover_url} alt={game.title} className="w-full h-full object-cover" loading="lazy" />
+            ) : (
+              <div className="w-full h-full flex items-center justify-center">
+                <Heart className="w-8 h-8 text-purple-700" />
+              </div>
+            )}
+            <div className="absolute top-1 right-1 bg-purple-600 rounded-full p-1">
+              <Heart className="w-3 h-3 fill-white" />
+            </div>
+          </div>
+          <div className="flex-1 min-w-0">
+            <h3 className="font-bold text-lg mb-1 truncate font-mono">{game.title}</h3>
+            <div className="flex items-center gap-2 text-sm text-slate-400 font-mono mb-2">
+              <span>{CONSOLE_ICONS[game.console]}</span>
+              <span>{game.console}</span>
+              {game.version && (
+                <span className="px-2 py-0.5 rounded text-xs bg-purple-700">{game.version}</span>
+              )}
+            </div>
+            {game.release_date && (
+              <p className="text-xs text-slate-500 font-mono">Released: {game.release_date}</p>
+            )}
+          </div>
+          <div className="flex gap-2 flex-shrink-0">
+            <button
+              onClick={() => startEdit(game, true)}
+              className="p-2 bg-blue-600 rounded-sm hover:bg-blue-700 transition-colors"
+            >
+              <Edit2 className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => moveToCollection(game)}
+              className="p-2 bg-green-600 rounded-sm hover:bg-green-700 transition-colors"
+            >
+              <Star className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => deleteGame(game.id, true)}
+              className="p-2 bg-red-600 rounded-sm hover:bg-red-700 transition-colors"
+            >
+              <Trash2 className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )
+    ))}
+  </div>
+                )}
+              </>
             )}
           </>
         )}
 
-        {/* Add/Edit Modal - Floppy disk themed */}
+        {/* Stats Tab */}
+        {activeTab === 'stats' && (
+          <div className="space-y-4 sm:space-y-6">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4">
+              <div className="bg-slate-800 rounded-sm border-4 border-slate-700 p-4 sm:p-6 relative overflow-hidden">
+                <div className="absolute top-0 left-0 right-0 h-3 bg-slate-950"></div>
+                <div className="flex items-center justify-between mt-2">
+                  <div>
+                    <p className="text-slate-400 text-xs sm:text-sm mb-1 font-mono">TOTAL GAMES</p>
+                    <p className="text-3xl sm:text-4xl font-black text-white font-mono">{totalGames}</p>
+                  </div>
+                  <Package className="w-10 h-10 sm:w-12 sm:h-12 text-amber-400" />
+                </div>
+              </div>
+              <div className="bg-slate-800 rounded-sm border-4 border-purple-700 p-4 sm:p-6 relative overflow-hidden">
+                <div className="absolute top-0 left-0 right-0 h-3 bg-slate-950"></div>
+                <div className="flex items-center justify-between mt-2">
+                  <div>
+                    <p className="text-slate-400 text-xs sm:text-sm mb-1 font-mono">WISHLIST</p>
+                    <p className="text-3xl sm:text-4xl font-black text-white font-mono">{totalWishlist}</p>
+                  </div>
+                  <Heart className="w-10 h-10 sm:w-12 sm:h-12 text-purple-400" />
+                </div>
+              </div>
+              <div className="bg-slate-800 rounded-sm border-4 border-slate-700 p-4 sm:p-6 relative overflow-hidden">
+                <div className="absolute top-0 left-0 right-0 h-3 bg-slate-950"></div>
+                <div className="flex items-center justify-between mt-2">
+                  <div>
+                    <p className="text-slate-400 text-xs sm:text-sm mb-1 font-mono">CONSOLES</p>
+                    <p className="text-3xl sm:text-4xl font-black text-white font-mono">{consoleStats.length}</p>
+                  </div>
+                  <Gamepad2 className="w-10 h-10 sm:w-12 sm:h-12 text-blue-400" />
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-slate-800 rounded-sm border-4 border-slate-700 p-4 sm:p-6 relative overflow-hidden">
+              <div className="absolute top-0 left-0 right-0 h-3 bg-slate-950"></div>
+              <h3 className="text-lg sm:text-xl font-bold mb-4 flex items-center gap-2 font-mono mt-2">
+                <TrendingUp className="w-5 h-5 sm:w-6 sm:h-6" />
+                CONSOLE BREAKDOWN
+              </h3>
+              {consoleStats.length === 0 ? (
+                <p className="text-slate-400 text-center py-6 sm:py-8 font-mono text-sm">No data yet - start adding games!</p>
+              ) : (
+                <div className="space-y-3">
+                  {consoleStats.sort((a, b) => b.count - a.count).map(stat => (
+                    <div key={stat.shortName} className="flex items-center gap-3 sm:gap-4">
+                      <span className="text-xl sm:text-2xl w-6 sm:w-8">{CONSOLE_ICONS[stat.shortName]}</span>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex justify-between mb-1">
+                          <span className="font-mono text-white text-sm sm:text-base truncate">{stat.name}</span>
+                          <span className="font-mono text-slate-400 text-sm ml-2">{stat.count}</span>
+                        </div>
+                        <div className="h-2 bg-slate-700 rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-amber-500 rounded-full transition-all"
+                            style={{ width: `${(stat.count / totalGames) * 100}%` }}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {versionStats.length > 0 && (
+              <div className="bg-slate-800 rounded-sm border-4 border-slate-700 p-4 sm:p-6 relative overflow-hidden">
+                <div className="absolute top-0 left-0 right-0 h-3 bg-slate-950"></div>
+                <h3 className="text-lg sm:text-xl font-bold mb-4 flex items-center gap-2 font-mono mt-2">
+                  <Star className="w-5 h-5 sm:w-6 sm:h-6" />
+                  VERSION DISTRIBUTION
+                </h3>
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+                  {versionStats.map(stat => (
+                    <div key={stat.name} className="bg-slate-700 rounded-sm p-3 sm:p-4 border-2 border-slate-600">
+                      <p className="text-slate-400 text-xs sm:text-sm mb-1 font-mono">{stat.name}</p>
+                      <p className="text-2xl sm:text-3xl font-black text-white font-mono">{stat.count}</p>
+                      <p className="text-slate-500 text-xs mt-1 font-mono">
+                        {((stat.count / totalGames) * 100).toFixed(1)}%
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Add Modal - Continuing in next part due to character limit... */}
         {showAddModal && (
-          <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center p-4 z-50">
-            <div className="bg-slate-800 rounded-sm max-w-2xl w-full max-h-[90vh] overflow-y-auto border-4 border-slate-600 shadow-2xl relative">
-              {/* Floppy disk metal shutter */}
-              <div className="absolute top-0 left-0 right-0 h-4 bg-slate-900 rounded-t-sm"></div>
-              <div className="p-6 pt-8">
-                <div className="flex justify-between items-center mb-6">
-                  <h2 className="text-2xl font-bold text-white font-mono flex items-center gap-2">
-                    💾 {addToWishlist ? 'SAVE TO WISHLIST' : 'SAVE TO COLLECTION'}
+          <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center p-4 z-50 overflow-y-auto">
+            <div className="bg-slate-800 rounded-sm max-w-4xl w-full border-4 border-slate-600 shadow-2xl my-8 relative max-h-[90vh] overflow-y-auto">
+              <div className="absolute top-0 left-0 right-0 h-3 sm:h-4 bg-slate-900 rounded-t-sm"></div>
+              <div className="p-4 sm:p-6 pt-6 sm:pt-8">
+                <div className="flex justify-between items-center mb-4 sm:mb-6">
+                  <h2 className="text-xl sm:text-2xl font-bold text-white flex items-center gap-2 font-mono">
+                    <Plus className="w-5 h-5 sm:w-6 sm:h-6" />
+                    {addToWishlist ? 'ADD TO WISHLIST' : 'ADD GAME'}
                   </h2>
                   <button onClick={() => {
                     setShowAddModal(false);
+                    setNewGame({
+                      title: '',
+                      console: '',
+                      version: 'PAL',
+                      cover_url: '',
+                      release_date: '',
+                      api_id: null,
+                      barcode: ''
+                    });
                     setSearchResults([]);
                     setAddToWishlist(false);
-                    setNewGame({ title: '', console: '', version: 'PAL', coverUrl: '', releaseDate: '', apiId: null, barcode: '' });
                   }} className="text-slate-400 hover:text-white">
-                    <X className="w-6 h-6" />
+                    <X className="w-5 h-5 sm:w-6 sm:h-6" />
                   </button>
                 </div>
 
-                {/* API Search */}
-                <div className="mb-6 bg-slate-700 rounded-sm p-4 border-2 border-slate-600">
-                  <label className="block text-white text-sm font-semibold mb-2 font-mono">
-                    🔍 RICERCA AUTOMATICA SU THEGAMESDB
+                <div className="mb-4 sm:mb-6">
+                  <label className="block text-amber-400 text-sm font-semibold mb-2 font-mono">
+                    SEARCH DATABASE
                   </label>
-                  <p className="text-slate-400 text-xs mb-3 font-mono">
-                    1. Seleziona prima una console (consigliato)<br/>
-                    2. Digita il titolo del gioco in inglese<br/>
-                    3. Clicca sul risultato per compilare automaticamente
-                  </p>
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      placeholder="Es: Pokemon Crystal, Mario Kart..."
+                  <div className="flex flex-col sm:flex-row gap-2">
+                    <select
                       onChange={(e) => {
-                        const query = e.target.value;
-                        if (query.length >= 2) {
-                          searchGames(query, CONSOLES.find(c => c.name === newGame.console)?.id);
-                        } else {
-                          setSearchResults([]);
-                        }
+                        setNewGame({ ...newGame, console: e.target.value });
                       }}
-                      className="flex-1 px-4 py-3 bg-slate-800 text-white rounded-lg border-2 border-slate-600 focus:outline-none focus:border-amber-500 text-base"
-                    />
+                      className="px-3 sm:px-4 py-2 bg-slate-700 text-white rounded-sm border-2 border-slate-600 focus:outline-none focus:border-amber-500 font-mono text-sm"
+                      value={newGame.console}
+                    >
+                      <option value="">All Platforms</option>
+                      {CONSOLES.map(c => (
+                        <option key={c.name} value={c.name}>{c.fullName}</option>
+                      ))}
+                    </select>
+                    <div className="flex-1 relative">
+                      <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-slate-400 w-4 h-4 sm:w-5 sm:h-5" />
+                      <input
+                        type="text"
+                        placeholder="Search game title..."
+                        onChange={(e) => {
+                          const query = e.target.value;
+                          if (query.length >= 2) {
+                            const consoleObj = CONSOLES.find(c => c.name === newGame.console);
+                            searchGames(query, consoleObj?.id);
+                          } else {
+                            setSearchResults([]);
+                          }
+                        }}
+                        className="w-full pl-9 sm:pl-10 pr-4 py-2 bg-slate-700 text-white rounded-sm border-2 border-slate-600 focus:outline-none focus:border-amber-500 font-mono text-sm"
+                      />
+                    </div>
                   </div>
+                  
                   {isSearching && (
-                    <div className="mt-3 p-3 bg-purple-900 bg-opacity-30 rounded-lg border border-purple-500">
-                      <p className="text-purple-300 text-sm">⏳ Ricerca in corso...</p>
+                    <div className="mt-4 text-center py-4 bg-slate-700 rounded-sm border-2 border-slate-600">
+                      <p className="text-slate-400 font-mono text-sm">Searching...</p>
                     </div>
                   )}
-                  {!isSearching && searchResults.length === 0 && newGame.console && (
-                    <div className="mt-3 p-3 bg-blue-900 bg-opacity-30 rounded-lg border border-blue-500">
-                      <p className="text-blue-300 text-sm">💡 Scrivi almeno 2 caratteri per cercare</p>
-                    </div>
-                  )}
-                  {!isSearching && searchResults.length > 0 && (
-                    <div className="mt-3 bg-slate-800 rounded-lg max-h-64 overflow-y-auto border-2 border-amber-500">
-                      <div className="p-2 bg-amber-900 bg-opacity-30 sticky top-0">
-                        <p className="text-amber-300 text-xs font-semibold">
-                          ✅ {searchResults.length} risultati trovati - Tocca per selezionare
-                        </p>
-                      </div>
-                      {searchResults.map(result => (
+                  
+                  {searchResults.length > 0 && (
+                    <div className="mt-4 max-h-48 sm:max-h-64 overflow-y-auto bg-slate-700 rounded-sm border-2 border-slate-600">
+                      {searchResults.map(game => (
                         <button
-                          key={result.id}
-                          onClick={() => selectGameFromSearch(result)}
-                          className="w-full p-4 hover:bg-slate-700 active:bg-slate-600 transition-colors flex items-center gap-3 text-left border-b border-slate-700 last:border-b-0"
+                          key={game.uniqueKey}
+                          onClick={() => selectGameFromSearch(game)}
+                          className="w-full p-3 hover:bg-slate-600 transition-colors text-left flex items-center gap-3 border-b border-slate-600 last:border-0"
                         >
-                          {result.coverUrl ? (
-                            <img src={result.coverUrl} alt={result.game_title} className="w-12 h-16 object-cover rounded flex-shrink-0 border-2 border-slate-600" />
+                          {game.cover_url ? (
+                            <img src={game.cover_url} alt={game.game_title} className="w-10 h-14 sm:w-12 sm:h-16 object-cover rounded" />
                           ) : (
-                            <div className="w-12 h-16 bg-slate-600 rounded flex-shrink-0 flex items-center justify-center">
-                              <span className="text-slate-400 text-xs">No cover</span>
+                            <div className="w-10 h-14 sm:w-12 sm:h-16 bg-slate-800 rounded flex items-center justify-center">
+                              <Gamepad2 className="w-5 h-5 sm:w-6 sm:h-6 text-slate-600" />
                             </div>
                           )}
                           <div className="flex-1 min-w-0">
-                            <div className="text-white font-medium text-base">{result.game_title}</div>
-                            <div className="text-slate-400 text-sm mt-1">
-                              {result.platformName}
-                            </div>
+                            <p className="font-bold text-white truncate font-mono text-sm">{game.game_title}</p>
+                            <p className="text-xs sm:text-sm text-slate-400 font-mono">{game.platformName}</p>
+                            {game.release_date && (
+                              <p className="text-xs text-slate-500 font-mono">{game.release_date}</p>
+                            )}
                           </div>
-                          <div className="text-amber-400 text-xl flex-shrink-0">→</div>
                         </button>
                       ))}
                     </div>
                   )}
                 </div>
 
-                <div className="h-px bg-slate-600 my-6"></div>
+                <div className="border-t-2 border-slate-700 pt-4 sm:pt-6 mb-4 sm:mb-6">
+                  <p className="text-slate-400 text-sm mb-4 font-mono">OR ADD MANUALLY:</p>
+                </div>
 
-                {/* Manual Entry */}
-                <div className="space-y-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
                   <div>
-                    <label className="block text-amber-400 text-sm font-semibold mb-2">
+                    <label className="block text-amber-400 text-sm font-semibold mb-2 font-mono">
                       Titolo *
                     </label>
                     <input
                       type="text"
                       value={newGame.title}
                       onChange={(e) => setNewGame({ ...newGame, title: e.target.value })}
-                      className="w-full px-4 py-2 bg-slate-700 text-white rounded-lg border-2 border-slate-600 focus:outline-none focus:border-amber-500"
+                      className="w-full px-3 sm:px-4 py-2 bg-slate-700 text-white rounded-sm border-2 border-slate-600 focus:outline-none focus:border-amber-500 font-mono text-sm"
+                      placeholder="Es: The Last of Us"
                     />
                   </div>
 
                   <div>
-                    <label className="block text-amber-400 text-sm font-semibold mb-2">
+                    <label className="block text-amber-400 text-sm font-semibold mb-2 font-mono">
                       Console *
                     </label>
                     <select
                       value={newGame.console}
                       onChange={(e) => setNewGame({ ...newGame, console: e.target.value })}
-                      className="w-full px-4 py-2 bg-slate-700 text-white rounded-lg border-2 border-slate-600 focus:outline-none focus:border-amber-500"
+                      className="w-full px-3 sm:px-4 py-2 bg-slate-700 text-white rounded-sm border-2 border-slate-600 focus:outline-none focus:border-amber-500 font-mono text-sm"
                     >
                       <option value="">Seleziona console</option>
                       {CONSOLES.map(c => (
@@ -890,13 +1493,13 @@ function App() {
                   </div>
 
                   <div>
-                    <label className="block text-amber-400 text-sm font-semibold mb-2">
+                    <label className="block text-amber-400 text-sm font-semibold mb-2 font-mono">
                       Versione
                     </label>
                     <select
                       value={newGame.version}
                       onChange={(e) => setNewGame({ ...newGame, version: e.target.value })}
-                      className="w-full px-4 py-2 bg-slate-700 text-white rounded-lg border-2 border-slate-600 focus:outline-none focus:border-amber-500"
+                      className="w-full px-3 sm:px-4 py-2 bg-slate-700 text-white rounded-sm border-2 border-slate-600 focus:outline-none focus:border-amber-500 font-mono text-sm"
                     >
                       {VERSIONS.map(v => (
                         <option key={v} value={v}>{v}</option>
@@ -905,47 +1508,66 @@ function App() {
                   </div>
 
                   <div>
-                    <label className="block text-amber-400 text-sm font-semibold mb-2">
+                    <label className="block text-amber-400 text-sm font-semibold mb-2 font-mono">
                       URL Copertina
                     </label>
                     <input
                       type="text"
-                      value={newGame.coverUrl}
-                      onChange={(e) => setNewGame({ ...newGame, coverUrl: e.target.value })}
-                      className="w-full px-4 py-2 bg-slate-700 text-white rounded-lg border-2 border-slate-600 focus:outline-none focus:border-amber-500"
+                      value={newGame.cover_url}
+                      onChange={(e) => setNewGame({ ...newGame, cover_url: e.target.value })}
+                      className="w-full px-3 sm:px-4 py-2 bg-slate-700 text-white rounded-sm border-2 border-slate-600 focus:outline-none focus:border-amber-500 font-mono text-sm"
                       placeholder="https://..."
                     />
                   </div>
 
                   <div>
-                    <label className="block text-amber-400 text-sm font-semibold mb-2">
-                      Barcode (opzionale)
+                    <label className="block text-amber-400 text-sm font-semibold mb-2 font-mono">
+                      Barcode
                     </label>
                     <input
                       type="text"
                       value={newGame.barcode}
                       onChange={(e) => setNewGame({ ...newGame, barcode: e.target.value })}
-                      className="w-full px-4 py-2 bg-slate-700 text-white rounded-lg border-2 border-slate-600 focus:outline-none focus:border-amber-500"
+                      className="w-full px-3 sm:px-4 py-2 bg-slate-700 text-white rounded-sm border-2 border-slate-600 focus:outline-none focus:border-amber-500 font-mono text-sm"
                       placeholder="Es: 045496730130"
                     />
                   </div>
                 </div>
 
-                <div className="flex gap-3 mt-6">
+                {newGame.cover_url && (
+                  <div className="mt-4">
+                    <label className="block text-amber-400 text-sm font-semibold mb-2 font-mono">
+                      PREVIEW
+                    </label>
+                    <div className="w-24 h-32 sm:w-32 sm:h-44 bg-slate-900 rounded overflow-hidden border-2 border-slate-600">
+                      <img src={newGame.cover_url} alt="Preview" className="w-full h-full object-cover" />
+                    </div>
+                  </div>
+                )}
+
+                <div className="flex flex-col sm:flex-row gap-3 mt-6">
                   <button
                     onClick={addGame}
-                    className="flex-1 px-6 py-3 bg-slate-700 text-white rounded-sm hover:bg-slate-600 transition-all font-bold border-4 border-slate-600 hover:border-slate-500 font-mono"
+                    className="flex-1 px-4 sm:px-6 py-2 sm:py-3 bg-slate-700 text-white rounded-sm hover:bg-slate-600 transition-all font-bold border-4 border-slate-600 hover:border-slate-500 font-mono text-sm"
                   >
-                    {addToWishlist ? '💾 SAVE TO WISHLIST' : '💾 SAVE TO COLLECTION'}
+                    {addToWishlist ? '💜 ADD TO WISHLIST' : '💾 ADD TO COLLECTION'}
                   </button>
                   <button
                     onClick={() => {
                       setShowAddModal(false);
+                      setNewGame({
+                        title: '',
+                        console: '',
+                        version: 'PAL',
+                        cover_url: '',
+                        release_date: '',
+                        api_id: null,
+                        barcode: ''
+                      });
                       setSearchResults([]);
                       setAddToWishlist(false);
-                      setNewGame({ title: '', console: '', version: 'PAL', coverUrl: '', releaseDate: '', apiId: null, barcode: '' });
                     }}
-                    className="px-6 py-3 bg-slate-900 text-slate-400 rounded-sm hover:bg-slate-800 transition-colors border-4 border-slate-700 font-mono"
+                    className="px-4 sm:px-6 py-2 sm:py-3 bg-slate-900 text-slate-400 rounded-sm hover:bg-slate-800 transition-colors border-4 border-slate-700 font-mono text-sm"
                   >
                     CANCEL
                   </button>
@@ -955,43 +1577,94 @@ function App() {
           </div>
         )}
 
-        {/* Edit Modal - Floppy themed */}
+        {/* Edit Modal with proper API search */}
         {showEditModal && editingGame && (
-          <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center p-4 z-50">
-            <div className="bg-slate-800 rounded-sm max-w-2xl w-full border-4 border-slate-600 shadow-2xl relative">
-              <div className="absolute top-0 left-0 right-0 h-4 bg-slate-900 rounded-t-sm"></div>
-              <div className="p-6 pt-8">
-                <div className="flex justify-between items-center mb-6">
-                  <h2 className="text-2xl font-bold text-white font-mono">✏️ EDIT FILE</h2>
+          <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center p-4 z-50 overflow-y-auto">
+            <div className="bg-slate-800 rounded-sm max-w-2xl w-full border-4 border-slate-600 shadow-2xl my-8 relative max-h-[90vh] overflow-y-auto">
+              <div className="absolute top-0 left-0 right-0 h-3 sm:h-4 bg-slate-900 rounded-t-sm"></div>
+              <div className="p-4 sm:p-6 pt-6 sm:pt-8">
+                <div className="flex justify-between items-center mb-4 sm:mb-6">
+                  <h2 className="text-xl sm:text-2xl font-bold text-white flex items-center gap-2 font-mono">
+                    <Edit2 className="w-5 h-5 sm:w-6 sm:h-6" />
+                    EDIT GAME
+                  </h2>
                   <button onClick={() => {
                     setShowEditModal(false);
                     setEditingGame(null);
+                    setApiSearchResults([]);
                   }} className="text-slate-400 hover:text-white">
-                    <X className="w-6 h-6" />
+                    <X className="w-5 h-5 sm:w-6 sm:h-6" />
                   </button>
                 </div>
 
-                <div className="space-y-4">
+                <div className="mb-4 sm:mb-6 bg-slate-700 p-3 sm:p-4 rounded-sm border-2 border-slate-600">
+                  <div className="flex items-center justify-between mb-2">
+                    <p className="text-amber-400 text-sm font-mono font-semibold">🔍 FIND COVER FROM API</p>
+                    <button
+                      onClick={() => searchAPIForCover(editingGame.title, editingGame.console)}
+                      disabled={!editingGame.title || !editingGame.console || isSearchingAPI}
+                      className="px-3 sm:px-4 py-1.5 sm:py-2 bg-blue-600 text-white rounded-sm hover:bg-blue-700 transition-all font-bold border-2 border-blue-500 font-mono text-xs sm:text-sm disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                    >
+                      <RefreshCw className={`w-3 h-3 sm:w-4 sm:h-4 ${isSearchingAPI ? 'animate-spin' : ''}`} />
+                      {isSearchingAPI ? 'SEARCHING...' : 'SEARCH API'}
+                    </button>
+                  </div>
+                  <p className="text-slate-400 text-xs font-mono">
+                    Cerca copertine e info su TheGamesDB per questo gioco
+                  </p>
+                </div>
+
+                {apiSearchResults.length > 0 && (
+                  <div className="mb-4 sm:mb-6 max-h-48 overflow-y-auto bg-slate-700 rounded-sm border-2 border-slate-600">
+                    <p className="text-amber-400 text-sm font-mono font-semibold p-3 border-b border-slate-600">
+                      SELECT A COVER:
+                    </p>
+                    {apiSearchResults.map(game => (
+                      <button
+                        key={game.uniqueKey}
+                        onClick={() => selectCoverFromAPI(game)}
+                        className="w-full p-3 hover:bg-slate-600 transition-colors text-left flex items-center gap-3 border-b border-slate-600 last:border-0"
+                      >
+                        {game.cover_url ? (
+                          <img src={game.cover_url} alt={game.game_title} className="w-10 h-14 sm:w-12 sm:h-16 object-cover rounded" />
+                        ) : (
+                          <div className="w-10 h-14 sm:w-12 sm:h-16 bg-slate-800 rounded flex items-center justify-center">
+                            <Gamepad2 className="w-5 h-5 sm:w-6 sm:h-6 text-slate-600" />
+                          </div>
+                        )}
+                        <div className="flex-1 min-w-0">
+                          <p className="font-bold text-white truncate font-mono text-sm">{game.game_title}</p>
+                          <p className="text-xs sm:text-sm text-slate-400 font-mono">{game.platformName}</p>
+                          {game.release_date && (
+                            <p className="text-xs text-slate-500 font-mono">{game.release_date}</p>
+                          )}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
                   <div>
-                    <label className="block text-amber-400 text-sm font-semibold mb-2">
+                    <label className="block text-amber-400 text-sm font-semibold mb-2 font-mono">
                       Titolo *
                     </label>
                     <input
                       type="text"
                       value={editingGame.title}
                       onChange={(e) => setEditingGame({ ...editingGame, title: e.target.value })}
-                      className="w-full px-4 py-2 bg-slate-700 text-white rounded-lg border-2 border-slate-600 focus:outline-none focus:border-amber-500"
+                      className="w-full px-3 sm:px-4 py-2 bg-slate-700 text-white rounded-sm border-2 border-slate-600 focus:outline-none focus:border-amber-500 font-mono text-sm"
                     />
                   </div>
 
                   <div>
-                    <label className="block text-amber-400 text-sm font-semibold mb-2">
+                    <label className="block text-amber-400 text-sm font-semibold mb-2 font-mono">
                       Console *
                     </label>
                     <select
                       value={editingGame.console}
                       onChange={(e) => setEditingGame({ ...editingGame, console: e.target.value })}
-                      className="w-full px-4 py-2 bg-slate-700 text-white rounded-lg border-2 border-slate-600 focus:outline-none focus:border-amber-500"
+                      className="w-full px-3 sm:px-4 py-2 bg-slate-700 text-white rounded-sm border-2 border-slate-600 focus:outline-none focus:border-amber-500 font-mono text-sm"
                     >
                       <option value="">Seleziona console</option>
                       {CONSOLES.map(c => (
@@ -1001,13 +1674,13 @@ function App() {
                   </div>
 
                   <div>
-                    <label className="block text-amber-400 text-sm font-semibold mb-2">
+                    <label className="block text-amber-400 text-sm font-semibold mb-2 font-mono">
                       Versione
                     </label>
                     <select
                       value={editingGame.version}
                       onChange={(e) => setEditingGame({ ...editingGame, version: e.target.value })}
-                      className="w-full px-4 py-2 bg-slate-700 text-white rounded-lg border-2 border-slate-600 focus:outline-none focus:border-amber-500"
+                      className="w-full px-3 sm:px-4 py-2 bg-slate-700 text-white rounded-sm border-2 border-slate-600 focus:outline-none focus:border-amber-500 font-mono text-sm"
                     >
                       {VERSIONS.map(v => (
                         <option key={v} value={v}>{v}</option>
@@ -1016,36 +1689,47 @@ function App() {
                   </div>
 
                   <div>
-                    <label className="block text-amber-400 text-sm font-semibold mb-2">
+                    <label className="block text-amber-400 text-sm font-semibold mb-2 font-mono">
                       URL Copertina
                     </label>
                     <input
                       type="text"
-                      value={editingGame.coverUrl}
-                      onChange={(e) => setEditingGame({ ...editingGame, coverUrl: e.target.value })}
-                      className="w-full px-4 py-2 bg-slate-700 text-white rounded-lg border-2 border-slate-600 focus:outline-none focus:border-amber-500"
+                      value={editingGame.cover_url}
+                      onChange={(e) => setEditingGame({ ...editingGame, cover_url: e.target.value })}
+                      className="w-full px-3 sm:px-4 py-2 bg-slate-700 text-white rounded-sm border-2 border-slate-600 focus:outline-none focus:border-amber-500 font-mono text-sm"
                       placeholder="https://..."
                     />
                   </div>
 
                   <div>
-                    <label className="block text-amber-400 text-sm font-semibold mb-2">
+                    <label className="block text-amber-400 text-sm font-semibold mb-2 font-mono">
                       Barcode
                     </label>
                     <input
                       type="text"
                       value={editingGame.barcode || ''}
                       onChange={(e) => setEditingGame({ ...editingGame, barcode: e.target.value })}
-                      className="w-full px-4 py-2 bg-slate-700 text-white rounded-lg border-2 border-slate-600 focus:outline-none focus:border-amber-500"
+                      className="w-full px-3 sm:px-4 py-2 bg-slate-700 text-white rounded-sm border-2 border-slate-600 focus:outline-none focus:border-amber-500 font-mono text-sm"
                       placeholder="Es: 045496730130"
                     />
                   </div>
                 </div>
 
-                <div className="flex gap-3 mt-6">
+                {editingGame.cover_url && (
+                  <div className="mt-4">
+                    <label className="block text-amber-400 text-sm font-semibold mb-2 font-mono">
+                      CURRENT COVER
+                    </label>
+                    <div className="w-24 h-32 sm:w-32 sm:h-44 bg-slate-900 rounded overflow-hidden border-2 border-slate-600">
+                      <img src={editingGame.cover_url} alt="Current cover" className="w-full h-full object-cover" />
+                    </div>
+                  </div>
+                )}
+
+                <div className="flex flex-col sm:flex-row gap-3 mt-6">
                   <button
                     onClick={saveEdit}
-                    className="flex-1 px-6 py-3 bg-slate-700 text-white rounded-sm hover:bg-slate-600 transition-all font-bold border-4 border-slate-600 hover:border-slate-500 font-mono"
+                    className="flex-1 px-4 sm:px-6 py-2 sm:py-3 bg-slate-700 text-white rounded-sm hover:bg-slate-600 transition-all font-bold border-4 border-slate-600 hover:border-slate-500 font-mono text-sm"
                   >
                     💾 SAVE CHANGES
                   </button>
@@ -1053,8 +1737,9 @@ function App() {
                     onClick={() => {
                       setShowEditModal(false);
                       setEditingGame(null);
+                      setApiSearchResults([]);
                     }}
-                    className="px-6 py-3 bg-slate-900 text-slate-400 rounded-sm hover:bg-slate-800 transition-colors border-4 border-slate-700 font-mono"
+                    className="px-4 sm:px-6 py-2 sm:py-3 bg-slate-900 text-slate-400 rounded-sm hover:bg-slate-800 transition-colors border-4 border-slate-700 font-mono text-sm"
                   >
                     CANCEL
                   </button>
@@ -1068,92 +1753,121 @@ function App() {
         {showBarcodeModal && (
           <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center p-4 z-50">
             <div className="bg-slate-800 rounded-sm max-w-md w-full border-4 border-slate-600 shadow-2xl relative">
-              <div className="absolute top-0 left-0 right-0 h-4 bg-slate-900 rounded-t-sm"></div>
-              <div className="p-6 pt-8">
-                <div className="flex justify-between items-center mb-6">
-                  <h2 className="text-2xl font-bold text-white flex items-center gap-2 font-mono">
-                    <Camera className="w-6 h-6" />
+              <div className="absolute top-0 left-0 right-0 h-3 sm:h-4 bg-slate-900 rounded-t-sm"></div>
+              <div className="p-4 sm:p-6 pt-6 sm:pt-8">
+                <div className="flex justify-between items-center mb-4 sm:mb-6">
+                  <h2 className="text-xl sm:text-2xl font-bold text-white flex items-center gap-2 font-mono">
+                    <Camera className="w-5 h-5 sm:w-6 sm:h-6" />
                     BARCODE SCAN
                   </h2>
                   <button onClick={() => {
                     setShowBarcodeModal(false);
                     setBarcodeInput('');
+                    stopCamera();
                   }} className="text-slate-400 hover:text-white">
-                    <X className="w-6 h-6" />
+                    <X className="w-5 h-5 sm:w-6 sm:h-6" />
                   </button>
                 </div>
 
                 <div className="space-y-4">
-                  <div className="bg-slate-700 rounded-sm p-6 border-2 border-slate-600 text-center">
-                    <Camera className="w-16 h-16 text-blue-400 mx-auto mb-4" />
-                    <p className="text-white mb-2 font-mono">INSERISCI BARCODE/UPC</p>
-                    <p className="text-slate-400 text-sm mb-4 font-mono">
-                      Inserisci il codice manualmente o usa uno scanner barcode esterno
-                    </p>
-                    
-                    <input
-                      type="text"
-                      value={barcodeInput}
-                      onChange={(e) => setBarcodeInput(e.target.value)}
-                      placeholder="Es: 045496730130"
-                      className="w-full px-4 py-3 bg-slate-800 text-white rounded-sm border-2 border-slate-600 focus:outline-none focus:border-slate-500 text-center font-mono text-lg mb-4"
-                      onKeyPress={(e) => {
-                        if (e.key === 'Enter' && barcodeInput) {
-                          searchByBarcode(barcodeInput);
-                        }
-                      }}
-                    />
+                  {!isUsingCamera ? (
+                    <>
+                      <div className="bg-slate-700 rounded-sm p-4 sm:p-6 border-2 border-slate-600 text-center">
+                        <Camera className="w-12 h-12 sm:w-16 sm:h-16 text-blue-400 mx-auto mb-4" />
+                        <p className="text-white mb-2 font-mono text-sm sm:text-base">INSERISCI BARCODE/UPC</p>
+                        <p className="text-slate-400 text-xs sm:text-sm mb-4 font-mono">
+                          Inserisci il codice manualmente o usa la fotocamera
+                        </p>
+                        
+                        <input
+                          type="text"
+                          value={barcodeInput}
+                          onChange={(e) => setBarcodeInput(e.target.value)}
+                          placeholder="Es: 045496730130"
+                          className="w-full px-3 sm:px-4 py-2 sm:py-3 bg-slate-800 text-white rounded-sm border-2 border-slate-600 focus:outline-none focus:border-slate-500 text-center font-mono text-base sm:text-lg mb-4"
+                          onKeyPress={(e) => {
+                            if (e.key === 'Enter' && barcodeInput) {
+                              searchByBarcode(barcodeInput);
+                            }
+                          }}
+                        />
 
-                    <button
-                      onClick={() => barcodeInput && searchByBarcode(barcodeInput)}
-                      disabled={!barcodeInput || isScanningBarcode}
-                      className="w-full px-6 py-3 bg-slate-700 text-white rounded-sm hover:bg-slate-600 transition-all font-bold border-4 border-slate-600 hover:border-slate-500 font-mono disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      {isScanningBarcode ? '⏳ RICERCA...' : '🔍 CERCA GIOCO'}
-                    </button>
-                  </div>
+                        <div className="flex flex-col sm:flex-row gap-2">
+                          <button
+                            onClick={() => barcodeInput && searchByBarcode(barcodeInput)}
+                            disabled={!barcodeInput || isScanningBarcode}
+                            className="flex-1 px-4 sm:px-6 py-2 sm:py-3 bg-slate-700 text-white rounded-sm hover:bg-slate-600 transition-all font-bold border-4 border-slate-600 hover:border-slate-500 font-mono disabled:opacity-50 disabled:cursor-not-allowed text-sm"
+                          >
+                            {isScanningBarcode ? '⏳ RICERCA...' : '🔍 CERCA'}
+                          </button>
+                          <button
+                            onClick={startCamera}
+                            className="flex-1 px-4 sm:px-6 py-2 sm:py-3 bg-blue-600 text-white rounded-sm hover:bg-blue-700 transition-all font-bold border-4 border-blue-500 font-mono text-sm"
+                          >
+                            📷 USA CAMERA
+                          </button>
+                        </div>
+                      </div>
 
-                  <div className="bg-slate-700 rounded-sm p-4 border-2 border-slate-600">
-                    <p className="text-slate-300 text-sm font-mono mb-2">💡 SUGGERIMENTI:</p>
-                    <ul className="text-slate-400 text-xs space-y-1 font-mono">
-                      <li>• Il barcode si trova sul retro della confezione</li>
-                      <li>• Formato: codice a 12-13 cifre (UPC/EAN)</li>
-                      <li>• Usa uno scanner barcode USB o l'app del telefono</li>
-                    </ul>
-                  </div>
+                      <div className="bg-slate-700 rounded-sm p-3 sm:p-4 border-2 border-slate-600">
+                        <p className="text-slate-300 text-xs sm:text-sm font-mono mb-2">💡 SUGGERIMENTI:</p>
+                        <ul className="text-slate-400 text-xs space-y-1 font-mono">
+                          <li>• Il barcode si trova sul retro della confezione</li>
+                          <li>• Formato: codice a 12-13 cifre (UPC/EAN)</li>
+                          <li>• Usa uno scanner USB o la fotocamera</li>
+                        </ul>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="bg-slate-700 rounded-sm p-4 border-2 border-slate-600">
+                      <div id="barcode-reader" className="w-full rounded-sm mb-4"></div>
+                      <p className="text-white text-center font-mono text-sm mb-4">
+                        Inquadra il barcode con la fotocamera
+                      </p>
+                      <button
+                        onClick={stopCamera}
+                        className="w-full px-6 py-3 bg-red-600 text-white rounded-sm hover:bg-red-700 transition-all font-bold border-4 border-red-500 font-mono"
+                      >
+                        CHIUDI CAMERA
+                      </button>
+                    </div>
+                  )}
                 </div>
 
-                <button
-                  onClick={() => {
-                    setShowBarcodeModal(false);
-                    setBarcodeInput('');
-                  }}
-                  className="w-full mt-6 px-6 py-3 bg-slate-900 text-slate-400 rounded-sm hover:bg-slate-800 transition-colors border-4 border-slate-700 font-mono"
-                >
-                  CHIUDI
-                </button>
+                {!isUsingCamera && (
+                  <button
+                    onClick={() => {
+                      setShowBarcodeModal(false);
+                      setBarcodeInput('');
+                    }}
+                    className="w-full mt-4 sm:mt-6 px-4 sm:px-6 py-2 sm:py-3 bg-slate-900 text-slate-400 rounded-sm hover:bg-slate-800 transition-colors border-4 border-slate-700 font-mono text-sm"
+                  >
+                    CHIUDI
+                  </button>
+                )}
               </div>
             </div>
           </div>
         )}
       </div>
 
-      {/* Floppy disk footer - fixed at bottom */}
-      <div className="mt-auto border-t-4 border-slate-700 bg-slate-900 py-6">
-        <div className="max-w-7xl mx-auto px-6">
-          <div className="text-center mb-3">
-            <p className="text-slate-400 font-mono text-sm">
-              💾 SAVE SLOT © 2025 • Powered by <span className="text-blue-400 font-bold">Bluemoon_Coder</span>
+      {/* Footer */}
+      <div className="mt-auto border-t-4 border-slate-700 bg-slate-900 py-4 sm:py-6 relative overflow-hidden">
+        <div className="absolute bottom-0 right-0 w-20 h-20 bg-slate-950 opacity-30 rounded-tl-full"></div>
+        
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 relative">
+          <div className="text-center mb-2 sm:mb-3">
+            <p className="text-slate-400 font-mono text-xs sm:text-sm">
+              💾 SAVE SLOT v2.0 © 2025 • Powered by <span className="text-blue-400 font-bold">Bluemoon_Coder</span>
             </p>
             <p className="text-slate-600 font-mono text-xs mt-1">
-              Total Files: {totalGames} • Disk Space: {totalGames + totalWishlist} FILES
+              Total Files: {totalGames} • Cloud Sync: {syncStatus === 'synced' ? '✓' : syncStatus === 'syncing' ? '...' : '✗'}
             </p>
           </div>
-          <div className="text-center border-t border-slate-800 pt-3">
+          <div className="text-center border-t border-slate-800 pt-2 sm:pt-3">
             <p className="text-slate-600 font-mono text-xs">
               Credits: <a href="https://thegamesdb.net/" target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:text-blue-400">TheGamesDB</a> • 
-              <a href="https://www.upcitemdb.com/" target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:text-blue-400 ml-1">UPC Item DB</a> • 
-              <a href="https://corsproxy.io/" target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:text-blue-400 ml-1">CORS Proxy</a>
+              <a href="https://www.upcitemdb.com/" target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:text-blue-400 ml-1">UPC Item DB</a>
             </p>
           </div>
         </div>
