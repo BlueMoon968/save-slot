@@ -157,8 +157,10 @@ function App() {
   const [addToWishlist, setAddToWishlist] = useState(false);
   const [userId, setUserId] = useState(null);
   const [isSyncing, setIsSyncing] = useState(false);
-  const [syncStatus, setSyncStatus] = useState('synced'); // 'synced', 'syncing', 'error'
-  const [showLoginModal, setShowLoginModal] = useState(false);  
+  const [syncStatus, setSyncStatus] = useState('synced');
+  const [showLoginModal, setShowLoginModal] = useState(false);
+  const [collectionValue, setCollectionValue] = useState(0);
+  const [isLoadingPrices, setIsLoadingPrices] = useState(false);
   const [username, setUsername] = useState('');               
   const [loginForm, setLoginForm] = useState({ username: '', password: '' }); 
   const [isLoggingIn, setIsLoggingIn] = useState(false);
@@ -208,6 +210,61 @@ const checkAuth = async () => {
     setShowLoginModal(true);
   }
 };
+
+// Calculate collection value using PriceCharting API
+const calculateCollectionValue = async () => {
+  setIsLoadingPrices(true);
+  let totalValue = 0;
+  
+  try {
+    for (const game of games) {
+      // Skip if no title or console
+      if (!game.title || !game.console) continue;
+      
+      // Build search query
+      const searchQuery = `${game.title} ${game.console}`;
+      
+      try {
+        // Call PriceCharting API (free tier: 10 requests/day, 1 req/sec)
+        const response = await fetch(
+          `https://www.pricecharting.com/api/products?t=${encodeURIComponent(searchQuery)}&type=prices`,
+          {
+            headers: {
+              'Accept': 'application/json'
+            }
+          }
+        );
+        
+        if (response.ok) {
+          const data = await response.json();
+          
+          // Get the first result if available
+          if (data.products && data.products.length > 0) {
+            const product = data.products[0];
+            // Use loose price (most common for used games)
+            const price = parseFloat(product['loose-price']) || 0;
+            totalValue += price;
+          }
+        }
+        
+        // Rate limiting: wait 1 second between requests
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+      } catch (error) {
+        console.error(`Error fetching price for ${game.title}:`, error);
+      }
+    }
+    
+    setCollectionValue(totalValue);
+    
+  } catch (error) {
+    console.error('Error calculating collection value:', error);
+    alert('Errore nel calcolare il valore della collezione. Riprova più tardi.');
+  } finally {
+    setIsLoadingPrices(false);
+  }
+};
+
   // Load data from Supabase
   const loadFromSupabase = async (uid) => {
     try {
@@ -1313,7 +1370,7 @@ const uniqueConsoles = [...new Set(games.map(g => g.console))].sort();
         {/* Stats Tab */}
         {activeTab === 'stats' && (
           <div className="space-y-4 sm:space-y-6">
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
               <div className="bg-slate-800 rounded-sm border-4 border-slate-700 p-4 sm:p-6 relative overflow-hidden">
                 <div className="absolute top-0 left-0 right-0 h-3 bg-slate-950"></div>
                 <div className="flex items-center justify-between mt-2">
@@ -1334,6 +1391,25 @@ const uniqueConsoles = [...new Set(games.map(g => g.console))].sort();
                   <Heart className="w-10 h-10 sm:w-12 sm:h-12 text-purple-400" />
                 </div>
               </div>
+            <div className="bg-slate-800 rounded-sm border-4 border-green-700 p-4 sm:p-6 relative overflow-hidden">
+              <div className="absolute top-0 left-0 right-0 h-3 bg-slate-950"></div>
+              <div className="flex items-center justify-between mt-2">
+                <div>
+                  <p className="text-slate-400 text-xs sm:text-sm mb-1 font-mono">COLLECTION VALUE</p>
+                  <p className="text-3xl sm:text-4xl font-black text-white font-mono">
+                    {isLoadingPrices ? '...' : `$${collectionValue.toFixed(0)}`}
+                  </p>
+                  <button
+                    onClick={calculateCollectionValue}
+                    disabled={isLoadingPrices || games.length === 0}
+                    className="mt-2 text-xs text-green-400 hover:text-green-300 font-mono disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {isLoadingPrices ? '⏳ Loading...' : '🔄 Calculate'}
+                  </button>
+                </div>
+                <TrendingUp className="w-10 h-10 sm:w-12 sm:h-12 text-green-400" />
+              </div>
+            </div>
               <div className="bg-slate-800 rounded-sm border-4 border-slate-700 p-4 sm:p-6 relative overflow-hidden">
                 <div className="absolute top-0 left-0 right-0 h-3 bg-slate-950"></div>
                 <div className="flex items-center justify-between mt-2">
