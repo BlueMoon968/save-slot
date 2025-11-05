@@ -12,7 +12,7 @@
 
 *Track your collection • Manage your wishlist • Never lose a game again*
 
-[✨ Features](#-features) • [🚀 Quick Start](#-quick-start) • [📸 Screenshots](#-screenshots) • [🛠️ Tech Stack](#️-tech-stack)
+[✨ Features](#-features) • [🚀 Quick Start](#-quick-start) • [🛠️ Tech Stack](#️-tech-stack)
 
 </div>
 
@@ -175,25 +175,6 @@ Open [http://localhost:5173](http://localhost:5173) in your browser!
 Use the test credentials:
 - Username: `mario`
 - Password: `password123`
-
----
-
-## 📸 Screenshots
-
-### Collection View (Grid Mode)
-*Browse your games in a beautiful grid layout with cover art*
-
-### Wishlist Management
-*Track games you want to buy with a separate wishlist*
-
-### Statistics Dashboard
-*Get insights into your collection with detailed breakdowns*
-
-### Barcode Scanner
-*Quickly add games by scanning barcodes with your camera*
-
-### List View
-*Switch to list view for detailed information at a glance*
 
 ---
 
@@ -376,26 +357,6 @@ Example: `user-mario`, `user-luigi`
 - [ ] **Social Features** - Share collections, compare with friends
 - [ ] **Achievement Badges** - Unlock milestones
 
-See [FEATURE_SUGGESTIONS.md](docs/FEATURE_SUGGESTIONS.md) for the complete list!
-
----
-
-## 🤝 Contributing
-
-Contributions are welcome! Here's how you can help:
-
-1. **Fork the repository**
-2. **Create a feature branch** (`git checkout -b feature/AmazingFeature`)
-3. **Commit your changes** (`git commit -m 'Add some AmazingFeature'`)
-4. **Push to the branch** (`git push origin feature/AmazingFeature`)
-5. **Open a Pull Request**
-
-### Contribution Guidelines
-- Follow existing code style (Tailwind CSS, React hooks)
-- Use `snake_case` for database fields
-- Add comments for complex logic
-- Test thoroughly before submitting PR
-
 ---
 
 ## 📝 License
@@ -411,15 +372,6 @@ This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) 
 - **[Lucide](https://lucide.dev/)** - Beautiful open-source icons
 - **[Tailwind CSS](https://tailwindcss.com/)** - Styling framework
 - Inspired by retro floppy disk aesthetics 💾
-
----
-
-## 📧 Support
-
-- **Issues:** [GitHub Issues](https://github.com/yourusername/save-slot/issues)
-- **Discussions:** [GitHub Discussions](https://github.com/yourusername/save-slot/discussions)
-
----
 
 ## 🌟 Star History
 
