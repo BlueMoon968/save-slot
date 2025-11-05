@@ -2,8 +2,8 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { Search, Plus, Grid3x3, List, Trash2, Edit2, X, BarChart3, Heart, Camera, TrendingUp, Package, Star, Gamepad2, Download, Upload, RefreshCw, Cloud, CloudOff, LogOut, User } from 'lucide-react';
 import { supabase } from './supabase';
 
-const SERVER_API = 'https://nzrmvrdbgdetdwfovmls.functions.supabase.co/barcode';
-const THEGAMESDB_BASE_URL = 'https://nzrmvrdbgdetdwfovmls.functions.supabase.co/tgdb';
+const SERVER_API = import.meta.env.VITE_SUPABASE_BARCODE
+const THEGAMESDB_BASE_URL = import.meta.env.VITE_SUPABASE_TGDB
 
 // Unique ID generator
 let uniqueIdCounter = 0;
@@ -13,31 +13,56 @@ const generateUniqueId = () => {
 };
 
 const CONSOLES = [
-  { id: 10, name: 'PS1', fullName: 'PlayStation', aliases: ['PlayStation', 'PS1', 'PSX'] },
-  { id: 11, name: 'PS2', fullName: 'PlayStation 2', aliases: ['PlayStation 2', 'PS2'] },
-  { id: 12, name: 'PS3', fullName: 'PlayStation 3', aliases: ['PlayStation 3', 'PS3'] },
-  { id: 4919, name: 'PS4', fullName: 'PlayStation 4', aliases: ['PlayStation 4', 'PS4'] },
-  { id: 4976, name: 'PS5', fullName: 'PlayStation 5', aliases: ['PlayStation 5', 'PS5'] },
-  { id: 16, name: 'PSP', fullName: 'PlayStation Portable', aliases: ['PSP'] },
-  { id: 17, name: 'PSP GO', fullName: 'PSP Go', aliases: ['PSP Go'] },
-  { id: 46, name: 'PS VITA', fullName: 'PlayStation Vita', aliases: ['PS Vita', 'Vita'] },
-  { id: 4, name: 'GB', fullName: 'Game Boy', aliases: ['Game Boy', 'GB'] },
-  { id: 41, name: 'GBC', fullName: 'Game Boy Color', aliases: ['Game Boy Color', 'GBC'] },
-  { id: 5, name: 'GBA', fullName: 'Game Boy Advance', aliases: ['Game Boy Advance', 'GBA'] },
-  { id: 8, name: 'NDS', fullName: 'Nintendo DS', aliases: ['Nintendo DS', 'NDS', 'DS'] },
-  { id: 4912, name: '3DS', fullName: 'Nintendo 3DS', aliases: ['Nintendo 3DS', '3DS'] },
-  { id: 7, name: 'NES', fullName: 'Nintendo Entertainment System', aliases: ['NES'] },
-  { id: 6, name: 'SNES', fullName: 'Super Nintendo', aliases: ['Super Nintendo', 'SNES'] },
-  { id: 3, name: 'N64', fullName: 'Nintendo 64', aliases: ['Nintendo 64', 'N64'] },
-  { id: 2, name: 'GAMECUBE', fullName: 'Nintendo GameCube', aliases: ['GameCube', 'NGC'] },
-  { id: 9, name: 'WII', fullName: 'Nintendo Wii', aliases: ['Wii'] },
-  { id: 38, name: 'WII U', fullName: 'Wii U', aliases: ['Wii U'] },
-  { id: 4971, name: 'SWITCH', fullName: 'Nintendo Switch', aliases: ['Nintendo Switch', 'Switch'] },
-  { id: 14, name: 'XBOX', fullName: 'Xbox', aliases: ['Xbox'] },
-  { id: 15, name: 'XBOX 360', fullName: 'Xbox 360', aliases: ['Xbox 360'] },
-  { id: 4920, name: 'XBOX ONE', fullName: 'Xbox One', aliases: ['Xbox One'] },
-  { id: 4977, name: 'XBOX SERIES X/S', fullName: 'Xbox Series X/S', aliases: ['Xbox Series X', 'Xbox Series S'] }
+  // Sony
+  { id: 10,   name: 'PS1',  fullName: 'PlayStation',           aliases: ['PlayStation', 'PS1', 'PSX'] },
+  { id: 11,   name: 'PS2',  fullName: 'PlayStation 2',         aliases: ['PlayStation 2', 'PS2'] },
+  { id: 12,   name: 'PS3',  fullName: 'PlayStation 3',         aliases: ['PlayStation 3', 'PS3'] },
+  { id: 4919, name: 'PS4',  fullName: 'PlayStation 4',         aliases: ['PlayStation 4', 'PS4'] },
+  { id: 4980, name: 'PS5',  fullName: 'PlayStation 5',         aliases: ['PlayStation 5', 'PS5'] },
+  { id: 13,   name: 'PSP',  fullName: 'PlayStation Portable',  aliases: ['PSP'] },
+  { id: 39,   name: 'PS VITA', fullName: 'PlayStation Vita',   aliases: ['PS Vita', 'Vita'] },
+
+  // Nintendo (home + handheld)
+  { id: 4,    name: 'GB',   fullName: 'Game Boy',              aliases: ['Game Boy', 'GB'] },
+  { id: 41,   name: 'GBC',  fullName: 'Game Boy Color',        aliases: ['Game Boy Color', 'GBC'] },
+  { id: 5,    name: 'GBA',  fullName: 'Game Boy Advance',      aliases: ['Game Boy Advance', 'GBA'] },
+  { id: 8,    name: 'NDS',  fullName: 'Nintendo DS',           aliases: ['Nintendo DS', 'NDS', 'DS'] },
+  { id: 4912, name: '3DS',  fullName: 'Nintendo 3DS',          aliases: ['Nintendo 3DS', '3DS'] },
+  { id: 7,    name: 'NES',  fullName: 'Nintendo Entertainment System', aliases: ['NES'] },
+  { id: 6,    name: 'SNES', fullName: 'Super Nintendo',        aliases: ['Super Nintendo', 'SNES'] },
+  { id: 3,    name: 'N64',  fullName: 'Nintendo 64',           aliases: ['Nintendo 64', 'N64'] },
+  { id: 2,    name: 'GAMECUBE', fullName: 'Nintendo GameCube', aliases: ['GameCube', 'NGC'] },
+  { id: 9,    name: 'WII',  fullName: 'Nintendo Wii',          aliases: ['Wii'] },
+  { id: 38,   name: 'WII U', fullName: 'Nintendo Wii U',       aliases: ['Wii U'] },
+  { id: 4971, name: 'SWITCH', fullName: 'Nintendo Switch',     aliases: ['Nintendo Switch', 'Switch'] },
+  { id: 5021, name: 'SWITCH 2', fullName: 'Nintendo Switch 2', aliases: ['Nintendo Switch 2', 'Switch 2'] },
+
+  // Microsoft
+  { id: 14,   name: 'XBOX',          fullName: 'Xbox',                   aliases: ['Xbox'] },
+  { id: 15,   name: 'XBOX 360',      fullName: 'Xbox 360',               aliases: ['Xbox 360'] },
+  { id: 4920, name: 'XBOX ONE',      fullName: 'Xbox One',               aliases: ['Xbox One'] },
+  { id: 4981, name: 'XBOX SERIES X', fullName: 'Xbox Series X',          aliases: ['Xbox Series X', 'Series X'] },
+
+  // PC & mobile
+  { id: 1,    name: 'PC',   fullName: 'PC (Microsoft Windows)', aliases: ['PC', 'Windows', 'Microsoft Windows'] },
+  { id: 37,   name: 'MAC',  fullName: 'Mac',                     aliases: ['Mac', 'macOS', 'Apple Mac'] },
+  { id: 4916, name: 'ANDROID', fullName: 'Android',             aliases: ['Android'] },
+  { id: 4915, name: 'iOS',  fullName: 'iOS',                     aliases: ['iOS', 'iPhone', 'iPad'] },
+
+  // Sega (corrected + added)
+  { id: 23,   name: 'DREAMCAST', fullName: 'Sega Dreamcast',    aliases: ['Dreamcast', 'Sega Dreamcast'] },
+  { id: 18,   name: 'GENESIS',   fullName: 'Sega Genesis',      aliases: ['Genesis', 'Mega Drive', 'Sega Genesis'] },
+  { id: 21,   name: 'SEGA CD',   fullName: 'Sega CD',           aliases: ['Sega CD', 'Mega-CD'] },
+  { id: 17,   name: 'SATURN',    fullName: 'Sega Saturn',       aliases: ['Saturn', 'Sega Saturn'] },
+  { id: 35,   name: 'MASTER SYSTEM', fullName: 'Sega Master System', aliases: ['Master System', 'SMS'] },
+  { id: 36,   name: 'MEGA DRIVE', fullName: 'Sega Mega Drive',  aliases: ['Mega Drive', 'Genesis (EU)'] },
+  { id: 20,   name: 'GAME GEAR', fullName: 'Sega Game Gear',    aliases: ['Game Gear'] },
+
+  // NEC & SNK (useful additions)
+  { id: 34,   name: 'TG-16', fullName: 'TurboGrafx-16',         aliases: ['TurboGrafx 16', 'PC Engine (NA)'] },
+  { id: 24,   name: 'NEO GEO', fullName: 'Neo Geo',             aliases: ['Neo Geo', 'AES', 'MVS'] }
 ];
+
 
 const VERSIONS = ['PAL', 'NTSC', 'NTSC-J', 'JP'];
 
@@ -401,8 +426,13 @@ const checkAuth = async () => {
             }
           }
           
-          const matchedConsole = CONSOLES.find(c => c.id === game.platform);
-          
+          let matchedConsole = CONSOLES.find(c => c.id === game.platform);
+
+          // Debug: log platform ID to find correct mapping
+          if (!matchedConsole) {
+            console.log('🔍 Unknown platform ID:', game.platform, 'for game:', game.game_title);
+          }
+                    
           return {
             ...game,
             cover_url,
@@ -460,8 +490,13 @@ const checkAuth = async () => {
             }
           }
           
-          const matchedConsole = CONSOLES.find(c => c.id === game.platform);
-          
+          let matchedConsole = CONSOLES.find(c => c.id === game.platform);
+
+          // Debug: log platform ID to find correct mapping
+          if (!matchedConsole) {
+            console.log('🔍 Unknown platform ID:', game.platform, 'for game:', game.game_title);
+          }
+
           return {
             ...game,
             cover_url,
@@ -647,8 +682,14 @@ const checkAuth = async () => {
   };
 
   const selectGameFromSearch = (game) => {
-    const matchedConsole = CONSOLES.find(c => c.id === game.platform);
-    
+    let matchedConsole = CONSOLES.find(c => c.id === game.platform);
+
+      // Debug: log platform ID to find correct mapping
+      if (!matchedConsole) {
+        console.log('🔍 Unknown platform ID:', game.platform, 'for game:', game.game_title);
+      }
+
+
     setNewGame({
       title: game.game_title,
       console: matchedConsole ? matchedConsole.name : '',
@@ -960,7 +1001,7 @@ const uniqueConsoles = [...new Set(games.map(g => g.console))].sort();
               <button
                 onClick={() => {
                   setShowAddModal(true);
-                  setAddToWishlist(false);
+                  setAddToWishlist(activeTab === 'wishlist');
                 }}
                 className="px-3 py-2 sm:px-4 sm:py-2 bg-amber-600 text-white rounded-sm hover:bg-amber-700 transition-all font-bold border-4 border-amber-500 hover:border-amber-400 shadow-lg flex items-center gap-2 font-mono text-xs sm:text-sm"
               >

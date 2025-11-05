@@ -5,5 +5,5 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   plugins: [react()],
   base: '/save-slot/',
-  server: { proxy: { '/api': { target: 'https://nzrmvrdbgdetdwfovmls.supabase.co/functions/v1/tgdb', changeOrigin: true } } }
+  //server: { proxy: { '/api': { target: 'https://nzrmvrdbgdetdwfovmls.supabase.co/functions/v1/tgdb', changeOrigin: true } } }
 })

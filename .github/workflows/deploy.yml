@@ -26,6 +26,9 @@ jobs:
         env:
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+          VITE_SUPABASE_TGDB: ${{ secrets.VITE_SUPABASE_TGDB }}
+          VITE_SUPABASE_BARCODE: ${{ secrets.VITE_SUPABASE_BARCODE }}
+
 
       - run: cp dist/index.html dist/404.html
 
