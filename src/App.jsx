@@ -771,37 +771,57 @@ const checkAuth = async () => {
     setSearchResults([]);
   };
 
-  const addGame = () => {
-    if (!newGame.title || !newGame.console) {
-      alert('Inserisci almeno titolo e console!');
-      return;
+const addGame = () => {
+  if (!newGame.title || !newGame.console) {
+    alert('Inserisci almeno titolo e console!');
+    return;
+  }
+
+  // Check for duplicates (case-insensitive)
+  const targetList = addToWishlist ? wishlist : games;
+  const duplicate = targetList.find(
+    g => g.title.toLowerCase().trim() === newGame.title.toLowerCase().trim() && 
+         g.console === newGame.console
+  );
+
+  if (duplicate) {
+    const confirmAdd = window.confirm(
+      `⚠️ DUPLICATO RILEVATO!\n\n` +
+      `"${newGame.title}" (${newGame.console}) è già nella tua ${addToWishlist ? 'wishlist' : 'collezione'}.\n\n` +
+      `Vuoi aggiungerlo comunque?\n` +
+      `(Potrebbe essere un'edizione diversa)`
+    );
+    
+    if (!confirmAdd) {
+      return; // User cancelled, don't add
     }
+  }
 
-    const gameToAdd = {
-      id: generateUniqueId(),
-      ...newGame,
-      added_date: new Date().toISOString()
-    };
-
-    if (addToWishlist) {
-      setWishlist([...wishlist, gameToAdd]);
-    } else {
-      setGames([...games, gameToAdd]);
-    }
-
-    setShowAddModal(false);
-    setNewGame({
-      title: '',
-      console: '',
-      version: 'PAL',
-      cover_url: '',
-      release_date: '',
-      api_id: null,
-      barcode: ''
-    });
-    setSearchResults([]);
-    setAddToWishlist(false);
+  const gameToAdd = {
+    id: generateUniqueId(),
+    ...newGame,
+    added_date: new Date().toISOString()
   };
+
+  if (addToWishlist) {
+    setWishlist([...wishlist, gameToAdd]);
+  } else {
+    setGames([...games, gameToAdd]);
+  }
+
+  setShowAddModal(false);
+  setNewGame({
+    title: '',
+    console: '',
+    version: 'PAL',
+    cover_url: '',
+    release_date: '',
+    api_id: null,
+    barcode: ''
+  });
+  setSearchResults([]);
+  setAddToWishlist(false);
+};
 
   const deleteGame = useCallback((id, is_wishlist = false) => {
     if (window.confirm('Sei sicuro di voler eliminare questo gioco?')) {

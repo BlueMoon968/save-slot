@@ -348,10 +348,10 @@ Example: `user-mario`, `user-luigi`
 ### Planned Features
 - [ ] **Completion Status Tracking** - Mark games as playing/completed/backlog
 - [ ] **Rating System** - Rate your games 1-5 stars
-- [ ] **Collection Value Estimator** - Track collection worth via PriceCharting API
+- [O] **Collection Value Estimator** - Track collection worth via PriceCharting API (currently using custom method)
 - [ ] **Advanced Sorting** - Sort by title, date, rating, console
 - [ ] **Notes/Comments** - Add personal notes to games
-- [ ] **Duplicate Detection** - Prevent accidental duplicate purchases
+- [X] **Duplicate Detection** - Prevent accidental duplicate purchases
 - [ ] **PWA Support** - Install as mobile app
 - [ ] **Dark/Light Themes** - Theme toggle
 - [ ] **Social Features** - Share collections, compare with friends
