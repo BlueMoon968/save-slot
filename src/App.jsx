@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { Search, Plus, Grid3x3, List, Trash2, Edit2, X, BarChart3, Heart, Camera, TrendingUp, Package, Star, Gamepad2, Download, Upload, RefreshCw, Cloud, CloudOff, LogOut, User } from 'lucide-react';
 import { supabase } from './supabase';
+import achievementsImage from './assets/achievements.png';
 
 const SERVER_API = import.meta.env.VITE_SUPABASE_BARCODE
 const THEGAMESDB_BASE_URL = import.meta.env.VITE_SUPABASE_TGDB
@@ -61,6 +62,99 @@ const CONSOLES = [
   // NEC & SNK (useful additions)
   { id: 34,   name: 'TG-16', fullName: 'TurboGrafx-16',         aliases: ['TurboGrafx 16', 'PC Engine (NA)'] },
   { id: 24,   name: 'NEO GEO', fullName: 'Neo Geo',             aliases: ['Neo Geo', 'AES', 'MVS'] }
+];
+
+const ACHIEVEMENTS = [
+  { 
+    id: 'first-game', 
+    name: 'First Game', 
+    desc: 'Add your first game', 
+    image: achievementsImage,
+    imagePosition: '-50px 0', // Top-left trophy (gamepad)
+    check: (games, wishlist, badges) => games.length >= 1
+  },
+  { 
+    id: 'collector', 
+    name: 'Collector', 
+    desc: 'Reach 50 games', 
+    image: achievementsImage,
+    imagePosition: '-340px 0', // Top-middle trophy (box)
+    check: (games, wishlist, badges) => games.length >= 50
+  },
+  { 
+    id: 'hoarder', 
+    name: 'Hoarder', 
+    desc: 'Reach 100 games', 
+    image: achievementsImage,
+    imagePosition: '-630px 0', // Top-right trophy (diamond)
+    check: (games, wishlist, badges) => games.length >= 100
+  },
+  { 
+    id: 'rainbow', 
+    name: 'Rainbow Collector', 
+    desc: 'Own games on 5+ consoles', 
+    image: achievementsImage,
+    imagePosition: '-50px -200px', // Middle-left trophy (rainbow)
+    check: (games, wishlist, badges) => {
+      const consoles = new Set(games.map(g => g.console));
+      return consoles.size >= 5;
+    }
+  },
+  { 
+    id: 'rare-hunter', 
+    name: 'Rare Hunter', 
+    desc: 'Own 10 retro games', 
+    image: achievementsImage,
+    imagePosition: '-340px -200px', // Middle-center trophy (gem)
+    check: (games, wishlist, badges) => {
+      const retroConsoles = ['PS1', 'PS2', 'N64', 'SNES', 'NES', 'GENESIS', 'DREAMCAST', 'SATURN', 'GAMECUBE'];
+      const retroGames = games.filter(g => retroConsoles.includes(g.console));
+      return retroGames.length >= 10;
+    }
+  },
+  { 
+    id: 'veteran', 
+    name: 'Veteran', 
+    desc: 'Active for 30+ days', 
+    image: achievementsImage,
+    imagePosition: '-630px -200px', // Middle-right trophy (calendar)
+    check: (games, wishlist, badges) => {
+      const oldestGame = games.reduce((oldest, game) => {
+        const gameDate = new Date(game.added_date);
+        return gameDate < oldest ? gameDate : oldest;
+      }, new Date());
+      const daysDiff = (new Date() - oldestGame) / (1000 * 60 * 60 * 24);
+      return daysDiff >= 30;
+    }
+  },
+  { 
+    id: 'wishlist-warrior', 
+    name: 'Wishlist Warrior', 
+    desc: 'Add 20+ games to wishlist', 
+    image: achievementsImage,
+    imagePosition: '-50px -400px', // Bottom-left trophy (star)
+    check: (games, wishlist, badges) => wishlist.length >= 20
+  },
+  { 
+    id: 'speed-collector', 
+    name: 'Speed Collector', 
+    desc: 'Add 10 games in one day', 
+    image: achievementsImage,
+    imagePosition: '-350px -400px', // Bottom-middle trophy (fire)
+    check: (games, wishlist, badges) => {
+      const today = new Date().toDateString();
+      const todayGames = games.filter(g => new Date(g.added_date).toDateString() === today);
+      return todayGames.length >= 10;
+    }
+  },
+  { 
+    id: 'master-collector', 
+    name: 'Master Collector', 
+    desc: 'Reach 500 games', 
+    image: achievementsImage,
+    imagePosition: '-630px -400px', // Bottom-right trophy (grid/treasure)
+    check: (games, wishlist, badges) => games.length >= 500
+  }
 ];
 
 
@@ -161,6 +255,9 @@ function App() {
   const [showLoginModal, setShowLoginModal] = useState(false);
   const [collectionValue, setCollectionValue] = useState(0);
   const [isLoadingPrices, setIsLoadingPrices] = useState(false);
+  const [unlockedBadges, setUnlockedBadges] = useState([]);
+  const [badgeNotifications, setBadgeNotifications] = useState([]);
+  const [notifiedBadges, setNotifiedBadges] = useState([]);
   const [username, setUsername] = useState('');               
   const [loginForm, setLoginForm] = useState({ username: '', password: '' }); 
   const [isLoggingIn, setIsLoggingIn] = useState(false);
@@ -277,6 +374,67 @@ const checkAuth = async () => {
     }
   };
 
+  const saveAchievementsOnServer = async (updatedNotified,uid) => {
+
+    try {
+      await supabase
+        .from('users')
+        .update({ notified_badges: updatedNotified })
+        .eq('id', uid);
+    }
+    catch (error){
+      console.error('Error saving achievements on supabase:', error)
+    }
+
+  };
+
+const checkAchievements = useCallback(() => {
+  const newBadges = [];
+  
+  ACHIEVEMENTS.forEach(achievement => {
+    // Check if already unlocked
+    if (unlockedBadges.includes(achievement.id)) return;
+    
+    // Check if condition is met
+    if (achievement.check(games, wishlist, unlockedBadges)) {
+      newBadges.push(achievement);
+    }
+  });
+  
+  if (newBadges.length > 0) {
+    setUnlockedBadges([...unlockedBadges, ...newBadges.map(b => b.id)]);
+    
+    // Filter out badges that have already been notified
+    const badgesToNotify = newBadges.filter(badge => !notifiedBadges.includes(badge.id));
+    
+    if (badgesToNotify.length > 0) {
+      // Mark these badges as notified
+      const updatedNotified = [...notifiedBadges, ...badgesToNotify.map(b => b.id)];
+      setNotifiedBadges(updatedNotified);
+      
+      // Save to localStorage
+      if (userId) {
+        localStorage.setItem(`saveslot-notified-badges-${userId}`, JSON.stringify(updatedNotified));
+        saveAchievementsOnServer(updatedNotified, userId)
+      }
+      
+      // Show notifications for new badges
+      badgesToNotify.forEach((badge, index) => {
+        const notificationId = `${badge.id}-${Date.now()}`;
+        
+        setTimeout(() => {
+          setBadgeNotifications(prev => [...prev, { ...badge, notificationId }]);
+          
+          // Remove after 5 seconds
+          setTimeout(() => {
+            setBadgeNotifications(prev => prev.filter(n => n.notificationId !== notificationId));
+          }, 5000);
+        }, index * 300);
+      });
+    }
+  }
+}, [games, wishlist, unlockedBadges, notifiedBadges, userId]);
+
   // Load data from Supabase
   const loadFromSupabase = async (uid) => {
     try {
@@ -302,6 +460,16 @@ const checkAuth = async () => {
         .order('added_date', { ascending: false });
 
       if (wishlistError) throw wishlistError;
+
+      const { data: userData } = await supabase
+      .from('users')
+      .select('notified_badges')
+      .eq('id', uid)
+      .single();
+
+      if (userData?.notified_badges) {
+        setNotifiedBadges(userData.notified_badges);
+      }
 
       setGames(collectionData || []);
       setWishlist(wishlistData || []);
@@ -329,6 +497,16 @@ const checkAuth = async () => {
           console.error('Error parsing saved wishlist:', e);
         }
       }
+
+      const savedNotifications = localStorage.getItem(`saveslot-notified-badges-${uid}`);
+      if (savedNotifications) {
+        try {
+          setNotifiedBadges(JSON.parse(savedNotifications));
+        } catch (e) {
+          console.error('Error parsing notified badges:', e);
+        }
+}
+
     } finally {
       setIsSyncing(false);
     }
@@ -455,6 +633,13 @@ const checkAuth = async () => {
     }, 1000);
     return () => clearTimeout(timeoutId);
   }, [games, wishlist, userId, saveToSupabase]);
+
+  // Check achievements when games or wishlist change
+  useEffect(() => {
+    if (games.length > 0 || wishlist.length > 0) {
+      checkAchievements();
+    }
+  }, [games.length, wishlist.length, checkAchievements]);
 
   const searchGames = async (query, platformId) => {
     if (!query || query.length < 2) {
@@ -1042,6 +1227,36 @@ const uniqueConsoles = [...new Set(games.map(g => g.console))].sort();
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white flex flex-col">
+    
+    {/* Badge Notifications - Multiple stacked */}
+    <div className="fixed top-24 right-4 z-50 space-y-3">
+      {badgeNotifications.map((badge, index) => (
+        <div 
+          key={badge.notificationId}
+          className="bg-gradient-to-br from-amber-500 to-amber-700 text-white p-4 rounded-sm border-4 border-amber-400 shadow-2xl animate-bounce"
+          style={{
+            animationDelay: `${index * 0.1}s`
+          }}
+        >
+          <div className="flex items-center gap-4">
+            <div 
+              className="w-16 h-16 bg-slate-200 rounded-full flex items-center justify-center border-4 border-amber-300 overflow-hidden flex-shrink-0"
+              style={{
+                backgroundImage: `url(${achievementsImage})`,
+                backgroundPosition: badge.imagePosition,
+                backgroundSize: '860px 596px',
+                backgroundRepeat: 'no-repeat'
+              }}
+            />
+            <div>
+              <p className="font-black font-mono text-lg">🏆 UNLOCKED!</p>
+              <p className="font-bold font-mono text-amber-100">{badge.name}</p>
+              <p className="text-sm text-amber-200 font-mono">{badge.desc}</p>
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
       {/* Header */}
       <div className="border-b-4 border-slate-700 bg-slate-900 shadow-2xl relative overflow-hidden">
         <div className="absolute top-0 left-0 right-0 h-12 bg-gradient-to-b from-slate-950 to-transparent opacity-70"></div>
@@ -1485,6 +1700,46 @@ const uniqueConsoles = [...new Set(games.map(g => g.console))].sort();
               )}
             </div>
 
+        {/* Achievements Section */}
+        <div className="bg-slate-800 rounded-sm border-4 border-amber-700 p-4 sm:p-6 relative overflow-hidden">
+          <div className="absolute top-0 left-0 right-0 h-3 bg-slate-950"></div>
+          <h3 className="text-lg sm:text-xl font-bold mb-4 flex items-center gap-2 font-mono mt-2">
+            <Star className="w-5 h-5 sm:w-6 sm:h-6 text-amber-400" />
+            ACHIEVEMENTS ({unlockedBadges.length}/{ACHIEVEMENTS.length})
+          </h3>
+          <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-6 gap-3 sm:gap-4">
+            {ACHIEVEMENTS.map(achievement => {
+              const isUnlocked = unlockedBadges.includes(achievement.id);
+              return (
+                <div 
+                  key={achievement.id}
+                  className={`relative group ${isUnlocked ? 'opacity-100' : 'opacity-30 grayscale'}`}
+                  title={achievement.desc}
+                >
+                  <div 
+                    className="w-full aspect-square rounded-sm border-4 transition-all"
+                    style={{
+                      backgroundImage: `url(${achievement.image})`,
+                      backgroundPosition: achievement.imagePosition,
+                      backgroundSize: '860px 596px',
+                      backgroundRepeat: 'no-repeat',
+                      borderColor: isUnlocked ? '#f59e0b' : '#475569'
+                    }}
+                  />
+                  <div className="mt-2 text-center">
+                    <p className="text-xs font-bold font-mono text-white truncate">{achievement.name}</p>
+                    <p className="text-xs text-slate-400 font-mono">{achievement.desc}</p>
+                  </div>
+                  {isUnlocked && (
+                    <div className="absolute -top-2 -right-2 bg-amber-500 rounded-full w-6 h-6 flex items-center justify-center border-2 border-amber-300">
+                      <span className="text-xs">✓</span>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
             {versionStats.length > 0 && (
               <div className="bg-slate-800 rounded-sm border-4 border-slate-700 p-4 sm:p-6 relative overflow-hidden">
                 <div className="absolute top-0 left-0 right-0 h-3 bg-slate-950"></div>
