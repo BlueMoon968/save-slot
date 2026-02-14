@@ -329,9 +329,10 @@ function App() {
   const [mangaSearchQuery, setMangaSearchQuery] = useState('');
   const [showAnimeDetails, setShowAnimeDetails] = useState(null);
   const [showMangaDetails, setShowMangaDetails] = useState(null);
-  const [anilistUsername, setAnilistUsername] = useState(
-    localStorage.getItem('anilist-username') || null
-  );
+  const [anilistUsername, setAnilistUsername] = useState(null);
+  const [anilistToken, setAnilistToken] = useState(null);
+  const [anilistUserId, setAnilistUserId] = useState(null);
+  const [isAnilistConnected, setIsAnilistConnected] = useState(false);
   const [username, setUsername] = useState('');               
   const [loginForm, setLoginForm] = useState({ username: '', password: '' }); 
   const [isLoggingIn, setIsLoggingIn] = useState(false);
@@ -722,6 +723,298 @@ const saveBatchCovers = async (batch) => {
       setIsSearchingAnime(false);
     }
   };
+
+// OAuth Login to AniList
+const loginToAniList = () => {
+  const clientId = import.meta.env.VITE_ANILIST_CLIENT_ID;
+  const redirectUri = import.meta.env.VITE_ANILIST_REDIRECT_URI;
+  
+  if (!clientId) {
+    alert('❌ AniList Client ID not configured. Check your .env file.');
+    return;
+  }
+  
+  const authUrl = `https://anilist.co/api/v2/oauth/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code`;
+  
+  console.log('🔐 Redirecting to AniList OAuth...');
+  window.location.href = authUrl;
+};
+
+// Handle OAuth callback
+const handleAniListCallback = async (code) => {
+  console.log('🔐 Handling AniList callback with code:', code);
+  
+  try {
+    // Exchange code for token
+    const response = await fetch('https://anilist.co/api/v2/oauth/token', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      },
+      body: JSON.stringify({
+        grant_type: 'authorization_code',
+        client_id: import.meta.env.VITE_ANILIST_CLIENT_ID,
+        client_secret: import.meta.env.VITE_ANILIST_CLIENT_SECRET,
+        redirect_uri: import.meta.env.VITE_ANILIST_REDIRECT_URI,
+        code: code
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(`OAuth token exchange failed: ${response.status}`);
+    }
+
+    const data = await response.json();
+    
+    if (data.access_token) {
+      console.log('✅ Access token received');
+      
+      // Save token
+      setAnilistToken(data.access_token);
+      await localforage.setItem('anilist-token', data.access_token);
+      
+      // Get user info
+      await getAniListUserInfo(data.access_token);
+      
+      // Import anime list
+      await importAniListWithToken(data.access_token);
+      
+      setIsAnilistConnected(true);
+      
+      // Clean URL
+      window.history.replaceState({}, document.title, window.location.pathname);
+      
+      alert('✅ Connesso ad AniList! I tuoi anime sono stati importati.');
+    }
+  } catch (error) {
+    console.error('❌ OAuth error:', error);
+    alert(`❌ Errore durante la connessione ad AniList:\n${error.message}`);
+  }
+};
+
+// Get AniList user info with token
+const getAniListUserInfo = async (token) => {
+  const query = `
+    query {
+      Viewer {
+        id
+        name
+        avatar {
+          large
+        }
+      }
+    }
+  `;
+
+  try {
+    const response = await fetch('https://graphql.anilist.co', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify({ query })
+    });
+
+    const data = await response.json();
+
+    if (data.data?.Viewer) {
+      const user = data.data.Viewer;
+      setAnilistUsername(user.name);
+      setAnilistUserId(user.id);
+      
+      await localforage.setItem('anilist-username', user.name);
+      await localforage.setItem('anilist-user-id', user.id);
+      
+      // Save to database
+      await supabase
+        .from('users')
+        .update({ 
+          anilist_username: user.name,
+          anilist_user_id: user.id 
+        })
+        .eq('id', userId);
+      
+      console.log('✅ AniList user info saved:', user.name);
+    }
+  } catch (error) {
+    console.error('❌ Error fetching AniList user:', error);
+  }
+};
+
+// Import anime with OAuth token
+const importAniListWithToken = async (token) => {
+  const query = `
+    query {
+      MediaListCollection(userId: $userId, type: ANIME) {
+        lists {
+          name
+          entries {
+            id
+            status
+            score
+            progress
+            media {
+              id
+              title {
+                romaji
+                english
+              }
+              episodes
+              coverImage {
+                large
+              }
+              bannerImage
+              genres
+              seasonYear
+              season
+              format
+            }
+          }
+        }
+      }
+    }
+  `;
+
+  try {
+    const response = await fetch('https://graphql.anilist.co', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify({ query })
+    });
+
+    const data = await response.json();
+
+    if (data.data?.MediaListCollection) {
+      const importedAnime = [];
+
+      data.data.MediaListCollection.lists.forEach(list => {
+        list.entries.forEach(entry => {
+          const animeData = {
+            id: generateUniqueId(),
+            user_id: userId,
+            title: entry.media.title.romaji || entry.media.title.english,
+            title_english: entry.media.title.english,
+            title_romaji: entry.media.title.romaji,
+            episodes: entry.media.episodes,
+            status: entry.status.toLowerCase(),
+            score: entry.score || 0,
+            progress: entry.progress || 0,
+            cover_url: entry.media.coverImage.large,
+            banner_url: entry.media.bannerImage,
+            genres: entry.media.genres,
+            year: entry.media.seasonYear,
+            season: entry.media.season,
+            format: entry.media.format,
+            anilist_id: entry.media.id,
+            anilist_entry_id: entry.id,
+            added_date: new Date().toISOString()
+          };
+
+          importedAnime.push(animeData);
+        });
+      });
+
+      setAnime(importedAnime);
+
+      // Save to Supabase
+      if (userId && importedAnime.length > 0) {
+        await supabase.from('anime').delete().eq('user_id', userId);
+        await supabase.from('anime').insert(importedAnime);
+        console.log(`✅ Imported ${importedAnime.length} anime to database`);
+      }
+    }
+  } catch (error) {
+    console.error('❌ Error importing anime:', error);
+  }
+};
+
+// Update anime on AniList (bidirectional sync)
+const updateAnimeOnAniList = async (animeItem) => {
+  if (!anilistToken || !animeItem.anilist_entry_id) {
+    console.warn('⚠️ Cannot update AniList: missing token or entry ID');
+    return false;
+  }
+
+  const mutation = `
+    mutation ($id: Int, $status: MediaListStatus, $score: Float, $progress: Int) {
+      SaveMediaListEntry(id: $id, status: $status, scoreRaw: $score, progress: $progress) {
+        id
+        status
+        score
+        progress
+      }
+    }
+  `;
+
+  // Convert status format
+  const statusMap = {
+    'watching': 'CURRENT',
+    'completed': 'COMPLETED',
+    'plan_to_watch': 'PLANNING',
+    'dropped': 'DROPPED',
+    'on_hold': 'PAUSED'
+  };
+
+  const variables = {
+    id: animeItem.anilist_entry_id,
+    status: statusMap[animeItem.status],
+    score: animeItem.score * 10, // AniList usa scala 0-100
+    progress: animeItem.progress || 0
+  };
+
+  try {
+    const response = await fetch('https://graphql.anilist.co', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${anilistToken}`
+      },
+      body: JSON.stringify({ query: mutation, variables })
+    });
+
+    const data = await response.json();
+
+    if (data.errors) {
+      console.error('❌ AniList update error:', data.errors);
+      return false;
+    }
+
+    console.log('✅ Updated on AniList:', animeItem.title);
+    return true;
+  } catch (error) {
+    console.error('❌ Error updating AniList:', error);
+    return false;
+  }
+};
+
+// Disconnect from AniList
+const disconnectAniList = async () => {
+  if (window.confirm('Disconnettere AniList? I tuoi anime rimarranno salvati localmente.')) {
+    setAnilistToken(null);
+    setAnilistUsername(null);
+    setAnilistUserId(null);
+    setIsAnilistConnected(false);
+    
+    await localforage.removeItem('anilist-token');
+    await localforage.removeItem('anilist-username');
+    await localforage.removeItem('anilist-user-id');
+    
+    await supabase
+      .from('users')
+      .update({ 
+        anilist_username: null,
+        anilist_user_id: null 
+      })
+      .eq('id', userId);
+    
+    alert('✅ Disconnesso da AniList');
+  }
+};
 
   // Search anime on AniList
   const searchAnime = async (query) => {
@@ -1322,6 +1615,36 @@ const saveToSupabase = useCallback(async (gamesData, wishlistData) => {
       checkAchievements();
     }
   }, [games.length, wishlist.length, checkAchievements]);
+
+// Handle AniList OAuth callback
+useEffect(() => {
+  const urlParams = new URLSearchParams(window.location.search);
+  const code = urlParams.get('code');
+  
+  if (code && !anilistToken) {
+    console.log('🔐 OAuth code detected, exchanging for token...');
+    handleAniListCallback(code);
+  }
+}, []);
+
+// Load AniList credentials on mount
+useEffect(() => {
+  const loadAniListCredentials = async () => {
+    const token = await localforage.getItem('anilist-token');
+    const username = await localforage.getItem('anilist-username');
+    const userIdAl = await localforage.getItem('anilist-user-id');
+    
+    if (token && username) {
+      setAnilistToken(token);
+      setAnilistUsername(username);
+      setAnilistUserId(userIdAl);
+      setIsAnilistConnected(true);
+      console.log('✅ AniList credentials loaded from cache');
+    }
+  };
+  
+  loadAniListCredentials();
+}, []);
 
   const searchGames = async (query, platformId) => {
     if (!query || query.length < 2) {
@@ -2402,25 +2725,32 @@ const addGame = () => {
                   )}
                 </div>
                 <div className="flex gap-2">
-                <button
-                  onClick={() => {
-                    // If username already saved, use it directly
-                    if (anilistUsername) {
-                      if (window.confirm(`Sincronizzare con l'account AniList "${anilistUsername}"?`)) {
-                        importFromAniList(anilistUsername);
-                      }
-                    } else {
-                      // Ask for username only first time
-                      const username = prompt('Inserisci il tuo username AniList:');
-                      if (username) {
-                        importFromAniList(username);
-                      }
-                    }
-                  }}
-                  className="px-4 py-2 bg-pink-600 text-white rounded-sm hover:bg-pink-700 transition-all font-bold border-4 border-pink-500 font-mono text-sm"
-                >
-                  {anilistUsername ? `🔄 Sync ${anilistUsername}` : '📥 Import from AniList'}
-                </button>
+                  {!isAnilistConnected ? (
+                    <button
+                      onClick={loginToAniList}
+                      className="px-4 py-2 bg-pink-600 text-white rounded-sm hover:bg-pink-700 transition-all font-bold border-4 border-pink-500 font-mono text-sm flex items-center gap-2"
+                    >
+                      <Star className="w-4 h-4" />
+                      Connect AniList
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        onClick={() => importAniListWithToken(anilistToken)}
+                        className="px-4 py-2 bg-pink-600 text-white rounded-sm hover:bg-pink-700 transition-all font-bold border-4 border-pink-500 font-mono text-sm flex items-center gap-2"
+                      >
+                        <RefreshCw className="w-4 h-4" />
+                        Sync {anilistUsername}
+                      </button>
+                      <button
+                        onClick={disconnectAniList}
+                        className="px-3 py-2 bg-slate-600 text-white rounded-sm hover:bg-slate-700 transition-all font-bold border-4 border-slate-500 font-mono text-sm"
+                        title="Disconnect AniList"
+                      >
+                        🔌
+                      </button>
+                    </>
+                  )}
                   {anilistUsername && (
                     <button
                       onClick={() => {
@@ -3459,20 +3789,29 @@ const addGame = () => {
                     </div>
 
                     <div className="flex gap-3 mb-4">
-                      <select
-                        value={showAnimeDetails.status}
-                        onChange={async (e) => {
-                          const newStatus = e.target.value;
-                          const updated = { ...showAnimeDetails, status: newStatus };
-                          
-                          setAnime(anime.map(a => a.id === updated.id ? updated : a));
-                          setShowAnimeDetails(updated);
-                          
-                          await supabase
-                            .from('anime')
-                            .update({ status: newStatus })
-                            .eq('id', updated.id);
-                        }}
+                        <select
+                          value={showAnimeDetails.status}
+                          onChange={async (e) => {
+                            const newStatus = e.target.value;
+                            const updated = { ...showAnimeDetails, status: newStatus };
+                            
+                            setAnime(anime.map(a => a.id === updated.id ? updated : a));
+                            setShowAnimeDetails(updated);
+                            
+                            // Save to database
+                            await supabase
+                              .from('anime')
+                              .update({ status: newStatus })
+                              .eq('id', updated.id);
+                            
+                            // Sync to AniList if connected
+                            if (isAnilistConnected) {
+                              const success = await updateAnimeOnAniList(updated);
+                              if (success) {
+                                console.log('✅ Synced to AniList');
+                              }
+                            }
+                          }}
                         className="flex-1 px-4 py-2 bg-slate-700 text-white rounded-sm border-2 border-pink-600 focus:outline-none font-mono text-sm"
                       >
                         <option value="watching">Watching</option>
@@ -3495,6 +3834,11 @@ const addGame = () => {
                             .from('anime')
                             .update({ score: newScore })
                             .eq('id', updated.id);
+                          
+                          // Sync to AniList
+                          if (isAnilistConnected) {
+                            await updateAnimeOnAniList(updated);
+                          }
                         }}
                         className="w-24 px-4 py-2 bg-amber-600 text-white rounded-sm border-2 border-amber-500 focus:outline-none font-mono text-sm font-bold"
                       >
