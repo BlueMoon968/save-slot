@@ -258,6 +258,21 @@ function App() {
   const [unlockedBadges, setUnlockedBadges] = useState([]);
   const [badgeNotifications, setBadgeNotifications] = useState([]);
   const [notifiedBadges, setNotifiedBadges] = useState([]);
+  const [anime, setAnime] = useState([]);
+  const [manga, setManga] = useState([]);
+  const [showAddAnimeModal, setShowAddAnimeModal] = useState(false);
+  const [showAddMangaModal, setShowAddMangaModal] = useState(false);
+  const [animeSearchResults, setAnimeSearchResults] = useState([]);
+  const [mangaSearchResults, setMangaSearchResults] = useState([]);
+  const [isSearchingAnime, setIsSearchingAnime] = useState(false);
+  const [isSearchingManga, setIsSearchingManga] = useState(false);
+  const [animeSearchQuery, setAnimeSearchQuery] = useState('');
+  const [mangaSearchQuery, setMangaSearchQuery] = useState('');
+  const [showAnimeDetails, setShowAnimeDetails] = useState(null);
+  const [showMangaDetails, setShowMangaDetails] = useState(null);
+  const [anilistUsername, setAnilistUsername] = useState(
+    localStorage.getItem('anilist-username') || null
+  );
   const [username, setUsername] = useState('');               
   const [loginForm, setLoginForm] = useState({ username: '', password: '' }); 
   const [isLoggingIn, setIsLoggingIn] = useState(false);
@@ -373,6 +388,450 @@ const checkAuth = async () => {
       setIsLoadingPrices(false);
     }
   };
+
+const updateAllCovers = async () => {
+  if (!window.confirm(
+    `⚠️ ATTENZIONE\n\n` +
+    `Questa operazione aggiornerà le copertine di TUTTI i ${games.length} giochi.\n\n` +
+    `• Ci vorranno circa ${Math.ceil(games.length * 2 / 60)} minuti\n` +
+    `• L'API ha limiti (1 richiesta ogni 2 secondi)\n` +
+    `• Se un gioco non viene trovato, verrà saltato\n\n` +
+    `Continuare?`
+  )) {
+    return;
+  }
+
+  setIsLoadingPrices(true);
+  let updated = 0;
+  let skipped = 0;
+  let errors = 0;
+
+  try {
+    const updatedGames = [...games];
+
+    for (let i = 0; i < updatedGames.length; i++) {
+      const game = updatedGames[i];
+      
+      // Skip if already has cover
+      if (game.cover_url) {
+        skipped++;
+        continue;
+      }
+
+      try {
+        // Find console ID
+        const consoleObj = CONSOLES.find(c => c.name === game.console);
+        if (!consoleObj) {
+          skipped++;
+          continue;
+        }
+
+        // Search on TheGamesDB
+        const params = new URLSearchParams({
+          name: game.title,
+          include: 'boxart',
+          platform: String(consoleObj.id)
+        });
+
+        const apiUrl = `${THEGAMESDB_BASE_URL}/Games/ByGameName?${params.toString()}`;
+        const res = await fetch(apiUrl, { headers: { Accept: 'application/json' } });
+        const txt = await res.text();
+        
+        if (!res.ok) {
+          errors++;
+          console.error(`Error for ${game.title}:`, res.status);
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          continue;
+        }
+
+        const data = JSON.parse(txt);
+
+        if (data.data?.games && data.data.games.length > 0) {
+          const foundGame = data.data.games[0];
+          const baseImageUrl = data.include?.boxart?.base_url?.large || 'https://cdn.thegamesdb.net/images/original/';
+          
+          let cover_url = '';
+          if (data.include?.boxart?.data && data.include.boxart.data[foundGame.id]) {
+            const boxartArray = data.include.boxart.data[foundGame.id];
+            const frontBoxart = boxartArray.find(img => img.side === 'front');
+            if (frontBoxart) {
+              cover_url = `${baseImageUrl}${frontBoxart.filename}`;
+            }
+          }
+
+          if (cover_url) {
+            updatedGames[i].cover_url = cover_url;
+            updated++;
+            console.log(`✅ Updated ${i + 1}/${games.length}: ${game.title}`);
+          } else {
+            skipped++;
+          }
+        } else {
+          skipped++;
+        }
+
+        // Rate limiting: 2 seconds between requests
+        await new Promise(resolve => setTimeout(resolve, 2000));
+
+      } catch (error) {
+        console.error(`Error updating ${game.title}:`, error);
+        errors++;
+      }
+    }
+
+    // Update state
+    setGames(updatedGames);
+
+    alert(
+      `✅ Aggiornamento completato!\n\n` +
+      `✅ Aggiornate: ${updated}\n` +
+      `⏭️ Saltate: ${skipped}\n` +
+      `❌ Errori: ${errors}`
+    );
+
+  } catch (error) {
+    console.error('Error in updateAllCovers:', error);
+    alert('❌ Errore durante l\'aggiornamento. Operazione interrotta.');
+  } finally {
+    setIsLoadingPrices(false);
+  }
+};
+
+  // Import diretto da AniList senza OAuth (API pubblica)
+  const importFromAniList = async (anilistUsername) => {
+    if (!anilistUsername || !anilistUsername.trim()) {
+      alert('Inserisci il tuo username AniList');
+      return;
+    }
+
+    setIsSearchingAnime(true);
+    
+    const query = `
+      query ($userName: String) {
+        MediaListCollection(userName: $userName, type: ANIME) {
+          lists {
+            name
+            entries {
+              id
+              status
+              score
+              progress
+              media {
+                id
+                title {
+                  romaji
+                  english
+                }
+                episodes
+                coverImage {
+                  large
+                }
+                bannerImage
+                genres
+                seasonYear
+                season
+                format
+              }
+            }
+          }
+        }
+      }
+    `;
+
+    try {
+      const response = await fetch('https://graphql.anilist.co', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
+        body: JSON.stringify({
+          query,
+          variables: { userName: anilistUsername }
+        })
+      });
+
+      const data = await response.json();
+
+      if (data.errors) {
+        throw new Error(data.errors[0].message);
+      }
+
+      if (data.data?.MediaListCollection) {
+        const importedAnime = [];
+
+        data.data.MediaListCollection.lists.forEach(list => {
+          list.entries.forEach(entry => {
+            const animeData = {
+              id: generateUniqueId(),
+              user_id: userId,
+              title: entry.media.title.romaji || entry.media.title.english,
+              title_english: entry.media.title.english,
+              title_romaji: entry.media.title.romaji,
+              episodes: entry.media.episodes,
+              status: entry.status.toLowerCase(),
+              score: entry.score || 0,
+              cover_url: entry.media.coverImage.large,
+              banner_url: entry.media.bannerImage,
+              genres: entry.media.genres,
+              year: entry.media.seasonYear,
+              season: entry.media.season,
+              format: entry.media.format,
+              anilist_id: entry.media.id,
+              added_date: new Date().toISOString()
+            };
+
+            importedAnime.push(animeData);
+          });
+        });
+
+        setAnime(importedAnime);
+
+        // Save to Supabase - CRITICAL: Check userId first
+        if (userId && userId.length > 5 && importedAnime.length > 0) {
+          try {
+            // Delete existing anime for this user
+            await supabase
+              .from('anime')
+              .delete()
+              .eq('user_id', userId);
+            
+            // Insert new anime
+            const { error } = await supabase
+              .from('anime')
+              .insert(importedAnime);
+            
+            if (error) {
+              console.error('Error saving anime:', error);
+              alert('⚠️ Anime importati ma non salvati nel database. Riprova.');
+            } else {
+              console.log(`✅ ${importedAnime.length} anime saved to database`);
+            }
+          } catch (error) {
+            console.error('Error saving anime to database:', error);
+          }
+        }
+
+        // Save to Supabase ONLY if we have valid userId
+        if (userId && importedAnime.length > 0) {
+          await supabase.from('anime').upsert(importedAnime);
+          alert(`✅ Importati ${importedAnime.length} anime da AniList!`);
+        }
+
+        setAnilistUsername(anilistUsername);
+        localStorage.setItem('anilist-username', anilistUsername);
+        // Save to database
+        try {
+          await supabase
+            .from('users')
+            .update({ anilist_username: anilistUsername })
+            .eq('id', userId);
+          
+          console.log('✅ AniList username saved to database');
+        } catch (error) {
+          console.error('Error saving AniList username:', error);
+        }
+      }
+    } catch (error) {
+      console.error('Error importing from AniList:', error);
+      alert(`❌ Errore: ${error.message}\n\nVerifica che lo username "${anilistUsername}" esista su AniList.`);
+    } finally {
+      setIsSearchingAnime(false);
+    }
+  };
+
+  // Search anime on AniList
+  const searchAnime = async (query) => {
+    const graphqlQuery = `
+      query ($search: String) {
+        Page(page: 1, perPage: 10) {
+          media(search: $search, type: ANIME) {
+            id
+            title {
+              romaji
+              english
+              native
+            }
+            episodes
+            coverImage {
+              large
+            }
+            bannerImage
+            genres
+            seasonYear
+            season
+            format
+          }
+        }
+      }
+    `;
+    
+    try {
+      const response = await fetch('https://graphql.anilist.co', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ 
+          query: graphqlQuery,
+          variables: { search: query }
+        })
+      });
+      
+      const data = await response.json();
+      return data.data?.Page?.media || [];
+    } catch (error) {
+      console.error('Error searching anime:', error);
+      return [];
+    }
+  };
+
+  // Search manga on AniList
+  const searchManga = async (query) => {
+    const graphqlQuery = `
+      query ($search: String) {
+        Page(page: 1, perPage: 10) {
+          media(search: $search, type: MANGA) {
+            id
+            title {
+              romaji
+              english
+              native
+            }
+            volumes
+            chapters
+            coverImage {
+              large
+            }
+            bannerImage
+            genres
+            startDate {
+              year
+            }
+            staff {
+              edges {
+                node {
+                  name {
+                    full
+                  }
+                }
+                role
+              }
+            }
+            format
+          }
+        }
+      }
+    `;
+    
+    try {
+      const response = await fetch('https://graphql.anilist.co', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ 
+          query: graphqlQuery,
+          variables: { search: query }
+        })
+      });
+      
+      const data = await response.json();
+      return data.data?.Page?.media || [];
+    } catch (error) {
+      console.error('Error searching manga:', error);
+      return [];
+    }
+  };
+
+const handleSearchAnime = async () => {
+  if (!animeSearchQuery || animeSearchQuery.length < 2) return;
+  
+  setIsSearchingAnime(true);
+  const results = await searchAnime(animeSearchQuery);
+  setAnimeSearchResults(results);
+  setIsSearchingAnime(false);
+};
+
+const handleSearchManga = async () => {
+  if (!mangaSearchQuery || mangaSearchQuery.length < 2) return;
+  
+  setIsSearchingManga(true);
+  const results = await searchManga(mangaSearchQuery);
+  setMangaSearchResults(results);
+  setIsSearchingManga(false);
+};
+
+const addAnimeFromSearch = async (animeData) => {
+  const newAnime = {
+    id: generateUniqueId(),
+    user_id: userId,
+    title: animeData.title.romaji || animeData.title.english,
+    title_english: animeData.title.english,
+    title_romaji: animeData.title.romaji,
+    episodes: animeData.episodes,
+    status: 'plan_to_watch',
+    score: 0,
+    cover_url: animeData.coverImage.large,
+    banner_url: animeData.bannerImage,
+    genres: animeData.genres,
+    year: animeData.seasonYear,
+    season: animeData.season,
+    format: animeData.format,
+    anilist_id: animeData.id,
+    added_date: new Date().toISOString()
+  };
+  
+  setAnime([newAnime, ...anime]);
+  
+  // Save to Supabase
+  try {
+    await supabase.from('anime').insert([newAnime]);
+  } catch (error) {
+    console.error('Error saving anime:', error);
+  }
+  
+  setShowAddAnimeModal(false);
+  setAnimeSearchQuery('');
+  setAnimeSearchResults([]);
+};
+
+const addMangaFromSearch = async (mangaData) => {
+  const author = mangaData.staff?.edges?.find(edge => edge.role === 'Story')?.node?.name?.full || '';
+  
+  const newManga = {
+    id: generateUniqueId(),
+    user_id: userId,
+    title: mangaData.title.romaji || mangaData.title.english,
+    title_english: mangaData.title.english,
+    title_romaji: mangaData.title.romaji,
+    volumes: mangaData.volumes,
+    chapters: mangaData.chapters,
+    status: 'plan_to_read',
+    score: 0,
+    cover_url: mangaData.coverImage.large,
+    banner_url: mangaData.bannerImage,
+    genres: mangaData.genres,
+    year: mangaData.startDate?.year,
+    author: author,
+    type: mangaData.format,
+    anilist_id: mangaData.id,
+    added_date: new Date().toISOString()
+  };
+  
+  setManga([newManga, ...manga]);
+  
+  // Save to Supabase
+  try {
+    await supabase.from('manga').insert([newManga]);
+  } catch (error) {
+    console.error('Error saving manga:', error);
+  }
+  
+  setShowAddMangaModal(false);
+  setMangaSearchQuery('');
+  setMangaSearchResults([]);
+};
 
   const saveAchievementsOnServer = async (updatedNotified,uid) => {
 
@@ -505,7 +964,52 @@ const checkAchievements = useCallback(() => {
         } catch (e) {
           console.error('Error parsing notified badges:', e);
         }
-}
+      }
+
+      // Load anime
+      const { data: animeData, error: animeError } = await supabase
+        .from('anime')
+        .select('*')
+        .eq('user_id', uid)
+        .order('added_date', { ascending: false });
+
+      if (!animeError && animeData) {
+        setAnime(animeData);
+      }
+
+      // Load manga
+      const { data: mangaData, error: mangaError } = await supabase
+        .from('manga')
+        .select('*')
+        .eq('user_id', uid)
+        .order('added_date', { ascending: false });
+
+      if (!mangaError && mangaData) {
+        setManga(mangaData);
+      }
+
+      // Load AniList username from database
+      const { data: userData } = await supabase
+        .from('users')
+        .select('anilist_username')
+        .eq('id', uid)
+        .single();
+
+      if (userData?.anilist_username) {
+        setAnilistUsername(userData.anilist_username);
+        localStorage.setItem('anilist-username', userData.anilist_username);
+        console.log('✅ Loaded AniList username:', userData.anilist_username);
+      }
+
+      if (collectionData && collectionData.length > 0) {
+        localStorage.setItem('saveslot-last-good-backup', JSON.stringify({
+          games: collectionData,
+          wishlist: wishlistData || [],
+          timestamp: new Date().toISOString(),
+          userId: uid
+        }));
+        console.log('✅ Auto-backup created after load');
+      }
 
     } finally {
       setIsSyncing(false);
@@ -571,58 +1075,132 @@ const checkAchievements = useCallback(() => {
     }
   };
 
-  // Save to Supabase with debouncing
-  const saveToSupabase = useCallback(async (gamesData, wishlistData) => {
-    if (!userId) return;
+const saveToSupabase = useCallback(async (gamesData, wishlistData) => {
+  // ============================================
+  // CRITICAL SAFETY CHECKS - PREVENT DATA LOSS
+  // ============================================
+  
+  // Check 1: userId must exist
+  if (!userId) {
+    console.error('❌ BLOCKED: No userId');
+    return;
+  }
 
-    try {
-      setSyncStatus('syncing');
+  // Check 2: userId must be valid string
+  if (typeof userId !== 'string' || userId === 'undefined' || userId === 'null') {
+    console.error('❌ BLOCKED: Invalid userId type:', userId);
+    setSyncStatus('error');
+    return;
+  }
 
-      // Prepare games for upsert
-      const allGames = [
-        ...gamesData.map(g => ({
-          ...g,
-          user_id: userId,
-          is_wishlist: false,
-          added_date: g.added_date || new Date().toISOString()
-        })),
-        ...wishlistData.map(g => ({
-          ...g,
-          user_id: userId,
-          is_wishlist: true,
-          added_date: g.added_date || new Date().toISOString()
-        }))
-      ];
+  // Check 3: userId must be long enough
+  if (userId.length < 5) {
+    console.error('❌ BLOCKED: userId too short:', userId);
+    setSyncStatus('error');
+    return;
+  }
 
-      // Delete all existing games for this user
-      await supabase
+  // Check 4: Must have data to save
+  if (!gamesData || !wishlistData) {
+    console.error('❌ BLOCKED: No data provided');
+    return;
+  }
+
+  try {
+    setSyncStatus('syncing');
+    
+    console.log(`🔄 Starting save for user: ${userId}`);
+    console.log(`📊 Games: ${gamesData.length}, Wishlist: ${wishlistData.length}`);
+
+    // Prepare games for upsert
+    const allGames = [
+      ...gamesData.map(g => ({
+        ...g,
+        user_id: userId,
+        is_wishlist: false,
+        added_date: g.added_date || new Date().toISOString()
+      })),
+      ...wishlistData.map(g => ({
+        ...g,
+        user_id: userId,
+        is_wishlist: true,
+        added_date: g.added_date || new Date().toISOString()
+      }))
+    ];
+
+    // SAFETY: Verify userId one more time before delete
+    if (!userId || userId.length < 5) {
+      throw new Error('CRITICAL: userId became invalid before delete!');
+    }
+
+    // Delete all existing games for THIS USER ONLY
+    const { error: deleteError, count } = await supabase
+      .from('games')
+      .delete()
+      .eq('user_id', userId);
+
+    if (deleteError) {
+      console.error('❌ Delete error:', deleteError);
+      throw deleteError;
+    }
+
+    console.log(`✅ Deleted ${count || 0} existing games for user ${userId}`);
+
+    // Insert new games
+    if (allGames.length > 0) {
+      const { error: insertError } = await supabase
         .from('games')
-        .delete()
-        .eq('user_id', userId);
+        .insert(allGames);
 
-      // Insert new games
-      if (allGames.length > 0) {
-        const { error } = await supabase
-          .from('games')
-          .insert(allGames);
-
-        if (error) throw error;
+      if (insertError) {
+        console.error('❌ Insert error:', insertError);
+        throw insertError;
       }
 
-      setSyncStatus('synced');
-      
-      // Also save to localStorage as backup
-      localStorage.setItem('saveslot-collection', JSON.stringify(gamesData));
-      localStorage.setItem('saveslot-wishlist', JSON.stringify(wishlistData));
-    } catch (error) {
-      console.error('Error saving to Supabase:', error);
-      setSyncStatus('error');
-      
-      // Save to localStorage as fallback
-      localStorage.setItem('saveslot-collection', JSON.stringify(gamesData));
-      localStorage.setItem('saveslot-wishlist', JSON.stringify(wishlistData));
+      console.log(`✅ Inserted ${allGames.length} games for user ${userId}`);
     }
-  }, [userId]);
+
+    setSyncStatus('synced');
+
+    // ALWAYS backup to localStorage
+    localStorage.setItem('saveslot-collection', JSON.stringify(gamesData));
+    localStorage.setItem('saveslot-wishlist', JSON.stringify(wishlistData));
+    localStorage.setItem('saveslot-last-backup', new Date().toISOString());
+    
+    console.log('✅ Save completed successfully');
+
+  } catch (error) {
+    console.error('❌ Error saving to Supabase:', error);
+    setSyncStatus('error');
+
+    // FALLBACK: Save to localStorage
+    try {
+      localStorage.setItem('saveslot-collection', JSON.stringify(gamesData));
+      localStorage.setItem('saveslot-wishlist', JSON.stringify(wishlistData));
+      localStorage.setItem('saveslot-error-backup', JSON.stringify({
+        games: gamesData,
+        wishlist: wishlistData,
+        timestamp: new Date().toISOString(),
+        error: error.message
+      }));
+      console.log('💾 Emergency backup saved to localStorage');
+    } catch (backupError) {
+      console.error('❌ Even backup failed:', backupError);
+    }
+  }
+}, [userId]);
+
+  // Global error handler - prevent saves during errors
+  useEffect(() => {
+    const handleError = (event) => {
+      console.error('Global error caught:', event.error);
+      // Block all saves during error
+      setSyncStatus('error');
+    };
+
+    window.addEventListener('error', handleError);
+    return () => window.removeEventListener('error', handleError);
+  }, []);
 
   // Debounced save effect
   useEffect(() => {
@@ -1134,6 +1712,22 @@ const addGame = () => {
     });
   }, [wishlist, searchTerm, filterConsole, filterVersion]);
 
+  const filteredAnime = useMemo(() => {
+    return anime.filter(item => {
+      const matchesSearch = item.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                          item.title_english?.toLowerCase().includes(searchTerm.toLowerCase());
+      return matchesSearch;
+    });
+  }, [anime, searchTerm]);
+
+  const filteredManga = useMemo(() => {
+    return manga.filter(item => {
+      const matchesSearch = item.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                          item.title_english?.toLowerCase().includes(searchTerm.toLowerCase());
+      return matchesSearch;
+    });
+  }, [manga, searchTerm]);
+
   const totalGames = games.length;
   const totalWishlist = wishlist.length;
   
@@ -1333,31 +1927,61 @@ const uniqueConsoles = [...new Set(games.map(g => g.console))].sort();
                 onChange={importCSV}
                 className="hidden"
               />
+              <button
+                onClick={updateAllCovers}
+                disabled={isLoadingPrices || games.length === 0}
+                className="px-3 py-2 bg-green-600 text-white rounded-sm hover:bg-green-700 transition-all font-bold border-4 border-green-500 font-mono text-xs disabled:opacity-50"
+                title="Update all game covers"
+              >
+                🖼️ UPDATE COVERS
+              </button>
             </div>
           </div>
 
-          <div className="flex gap-1 sm:gap-2 overflow-x-auto pb-2 sm:pb-0">
-            <button
-              onClick={() => setActiveTab('collection')}
-              className={`flex-1 sm:flex-none px-3 sm:px-6 py-2 sm:py-3 rounded-sm font-bold font-mono transition-all border-4 text-xs sm:text-sm whitespace-nowrap ${
-                activeTab === 'collection'
-                  ? 'bg-slate-700 text-white border-slate-600'
-                  : 'bg-slate-800 text-slate-400 border-slate-700 hover:bg-slate-700'
-              }`}
-            >
+          <div className="flex flex-wrap gap-2 justify-center mb-4 sm:mb-6">
+                <button
+                  onClick={() => setActiveTab('collection')}
+                  className={`flex-1 sm:flex-none px-3 sm:px-6 py-2 sm:py-3 rounded-sm font-bold font-mono transition-all border-4 text-xs sm:text-sm whitespace-nowrap ${
+                    activeTab === 'collection'
+                      ? 'bg-slate-700 text-white border-amber-600'
+                      : 'bg-slate-800 text-slate-400 border-slate-700 hover:bg-slate-700'
+                  }`}
+                >
               <Package className="w-4 h-4 sm:w-5 sm:h-5 inline mr-1 sm:mr-2" />
-              <span className="hidden sm:inline">COLLECTION</span> ({totalGames})
+              <span className="hidden sm:inline">GAMES</span> ({totalGames})
             </button>
-            <button
-              onClick={() => setActiveTab('wishlist')}
-              className={`flex-1 sm:flex-none px-3 sm:px-6 py-2 sm:py-3 rounded-sm font-bold font-mono transition-all border-4 text-xs sm:text-sm whitespace-nowrap ${
-                activeTab === 'wishlist'
-                  ? 'bg-slate-700 text-white border-slate-600'
-                  : 'bg-slate-800 text-slate-400 border-slate-700 hover:bg-slate-700'
-              }`}
-            >
+              <button
+                onClick={() => setActiveTab('wishlist')}
+                className={`flex-1 sm:flex-none px-3 sm:px-6 py-2 sm:py-3 rounded-sm font-bold font-mono transition-all border-4 text-xs sm:text-sm whitespace-nowrap ${
+                  activeTab === 'wishlist'
+                    ? 'bg-slate-700 text-white border-purple-600'
+                    : 'bg-slate-800 text-slate-400 border-slate-700 hover:bg-slate-700'
+                }`}
+              >
               <Heart className="w-4 h-4 sm:w-5 sm:h-5 inline mr-1 sm:mr-2" />
               <span className="hidden sm:inline">WISHLIST</span> ({totalWishlist})
+            </button>
+            <button
+              onClick={() => setActiveTab('anime')}
+              className={`flex-1 sm:flex-none px-3 sm:px-6 py-2 sm:py-3 rounded-sm font-bold font-mono transition-all border-4 text-xs sm:text-sm whitespace-nowrap ${
+                activeTab === 'anime'
+                  ? 'bg-slate-700 text-white border-pink-600'
+                  : 'bg-slate-800 text-slate-400 border-slate-700 hover:bg-slate-700'
+              }`}
+            >
+              <Star className="w-4 h-4 sm:w-5 sm:h-5 inline mr-1 sm:mr-2" />
+              <span className="hidden sm:inline">ANIME</span> ({anime.length})
+            </button>
+            <button
+              onClick={() => setActiveTab('manga')}
+              className={`flex-1 sm:flex-none px-3 sm:px-6 py-2 sm:py-3 rounded-sm font-bold font-mono transition-all border-4 text-xs sm:text-sm whitespace-nowrap ${
+                activeTab === 'manga'
+                  ? 'bg-slate-700 text-white border-blue-600'
+                  : 'bg-slate-800 text-slate-400 border-slate-700 hover:bg-slate-700'
+              }`}
+            >
+              <TrendingUp className="w-4 h-4 sm:w-5 sm:h-5 inline mr-1 sm:mr-2" />
+              <span className="hidden sm:inline">MANGA</span> ({manga.length})
             </button>
             <button
               onClick={() => setActiveTab('stats')}
@@ -1385,7 +2009,13 @@ const uniqueConsoles = [...new Set(games.map(g => g.console))].sort();
                     <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-slate-400 w-4 h-4 sm:w-5 sm:h-5" />
                     <input
                       type="text"
-                      placeholder="SEARCH GAMES..."
+                      placeholder={
+                        activeTab === 'collection' ? 'SEARCH GAMES...' :
+                        activeTab === 'wishlist' ? 'SEARCH WISHLIST...' :
+                        activeTab === 'anime' ? 'SEARCH ANIME...' :
+                        activeTab === 'manga' ? 'SEARCH MANGA...' :
+                        'SEARCH...'
+                      }
                       value={searchTerm}
                       onChange={(e) => setSearchTerm(e.target.value)}
                       className="w-full pl-9 sm:pl-10 pr-4 py-2 bg-slate-700 text-white rounded-sm border-2 border-slate-600 focus:outline-none focus:border-slate-500 font-mono text-sm"
@@ -1614,6 +2244,174 @@ const uniqueConsoles = [...new Set(games.map(g => g.console))].sort();
           </>
         )}
 
+        {/* Anime Tab */}
+        {activeTab === 'anime' && (
+          <>
+            <div className="mb-4 sm:mb-6 bg-slate-800 p-3 sm:p-4 rounded-sm border-4 border-pink-700">
+              <div className="flex flex-col sm:flex-row justify-between items-center gap-3">
+                <div className="text-slate-400 font-mono text-sm flex items-center gap-3">
+                  <span>{anime.length} anime</span>
+                  {anilistUsername && (
+                    <span className="text-pink-400">🔗 Connected: {anilistUsername}</span>
+                  )}
+                </div>
+                <div className="flex gap-2">
+                <button
+                  onClick={() => {
+                    // If username already saved, use it directly
+                    if (anilistUsername) {
+                      if (window.confirm(`Sincronizzare con l'account AniList "${anilistUsername}"?`)) {
+                        importFromAniList(anilistUsername);
+                      }
+                    } else {
+                      // Ask for username only first time
+                      const username = prompt('Inserisci il tuo username AniList:');
+                      if (username) {
+                        importFromAniList(username);
+                      }
+                    }
+                  }}
+                  className="px-4 py-2 bg-pink-600 text-white rounded-sm hover:bg-pink-700 transition-all font-bold border-4 border-pink-500 font-mono text-sm"
+                >
+                  {anilistUsername ? `🔄 Sync ${anilistUsername}` : '📥 Import from AniList'}
+                </button>
+                  {anilistUsername && (
+                    <button
+                      onClick={() => {
+                        const newUsername = prompt('Cambia username AniList:', anilistUsername);
+                        if (newUsername && newUsername !== anilistUsername) {
+                          importFromAniList(newUsername);
+                        }
+                      }}
+                      className="px-4 py-2 bg-slate-600 text-white rounded-sm hover:bg-slate-700 transition-all font-bold border-4 border-slate-500 font-mono text-sm"
+                      title="Change AniList username"
+                    >
+                      ⚙️
+                    </button>
+                  )}
+                  <button
+                    onClick={() => setShowAddAnimeModal(true)}
+                    className="px-4 py-2 bg-amber-600 text-white rounded-sm hover:bg-amber-700 transition-all font-bold border-4 border-amber-500 font-mono text-sm"
+                  >
+                    <Plus className="w-4 h-4 inline mr-1" />
+                    Add Anime
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {anime.length === 0 ? (
+              <div className="text-center py-12 sm:py-16 bg-slate-800 rounded-sm border-4 border-pink-700">
+                <Star className="w-12 h-12 sm:w-16 sm:h-16 text-pink-600 mx-auto mb-4" />
+                <p className="text-slate-400 font-mono text-sm sm:text-base mb-4">NO ANIME YET</p>
+                <button
+                  onClick={() => setShowAddAnimeModal(true)}
+                  className="px-4 sm:px-6 py-2 bg-pink-600 text-white rounded-sm hover:bg-pink-700 transition-all font-bold border-4 border-pink-500 font-mono text-sm"
+                >
+                  Add Your First Anime
+                </button>
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 sm:gap-4">
+                    {filteredAnime.map(item => (
+                      <div 
+                        key={item.id} 
+                        onClick={() => setShowAnimeDetails(item)}
+                        className="bg-slate-800 rounded-sm border-4 border-pink-700 hover:border-pink-600 overflow-hidden transition-all shadow-lg group cursor-pointer"
+                      >
+                    <div className="aspect-[3/4] bg-slate-900 relative overflow-hidden">
+                      {item.cover_url ? (
+                        <img src={item.cover_url} alt={item.title} className="w-full h-full object-cover" loading="lazy" />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center">
+                          <Star className="w-12 h-12 sm:w-16 sm:h-16 text-pink-700" />
+                        </div>
+                      )}
+                      <div className="absolute top-2 right-2 bg-pink-600 rounded px-2 py-1 text-xs font-bold font-mono">
+                        {item.status?.toUpperCase()}
+                      </div>
+                      {item.score > 0 && (
+                        <div className="absolute top-2 left-2 bg-amber-500 rounded-full w-8 h-8 flex items-center justify-center font-bold text-sm">
+                          {item.score}
+                        </div>
+                      )}
+                    </div>
+                    <div className="p-2 sm:p-3">
+                      <h3 className="font-bold text-xs sm:text-sm mb-1 truncate font-mono">{item.title}</h3>
+                      <p className="text-xs text-slate-400 font-mono">
+                        {item.episodes ? `${item.episodes} eps` : 'Ongoing'} • {item.format}
+                      </p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+
+        {/* Manga Tab */}
+        {activeTab === 'manga' && (
+          <>
+            <div className="mb-4 sm:mb-6 bg-slate-800 p-3 sm:p-4 rounded-sm border-4 border-blue-700">
+              <div className="flex flex-col sm:flex-row justify-between items-center gap-3">
+                <div className="text-slate-400 font-mono text-sm">
+                  {manga.length} manga
+                </div>
+                <button
+                  onClick={() => setShowAddMangaModal(true)}
+                  className="px-4 py-2 bg-amber-600 text-white rounded-sm hover:bg-amber-700 transition-all font-bold border-4 border-amber-500 font-mono text-sm"
+                >
+                  <Plus className="w-4 h-4 inline mr-1" />
+                  Add Manga
+                </button>
+              </div>
+            </div>
+
+            {manga.length === 0 ? (
+              <div className="text-center py-12 sm:py-16 bg-slate-800 rounded-sm border-4 border-blue-700">
+                <TrendingUp className="w-12 h-12 sm:w-16 sm:h-16 text-blue-600 mx-auto mb-4" />
+                <p className="text-slate-400 font-mono text-sm sm:text-base mb-4">NO MANGA YET</p>
+                <button
+                  onClick={() => setShowAddMangaModal(true)}
+                  className="px-4 sm:px-6 py-2 bg-blue-600 text-white rounded-sm hover:bg-blue-700 transition-all font-bold border-4 border-blue-500 font-mono text-sm"
+                >
+                  Add Your First Manga
+                </button>
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 sm:gap-4">
+                {filteredManga.map(item => (
+                  <div key={item.id} className="bg-slate-800 rounded-sm border-4 border-blue-700 hover:border-blue-600 overflow-hidden transition-all shadow-lg group">
+                    <div className="aspect-[3/4] bg-slate-900 relative overflow-hidden">
+                      {item.cover_url ? (
+                        <img src={item.cover_url} alt={item.title} className="w-full h-full object-cover" loading="lazy" />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center">
+                          <TrendingUp className="w-12 h-12 sm:w-16 sm:h-16 text-blue-700" />
+                        </div>
+                      )}
+                      <div className="absolute top-2 right-2 bg-blue-600 rounded px-2 py-1 text-xs font-bold font-mono">
+                        {item.status?.toUpperCase()}
+                      </div>
+                      {item.score > 0 && (
+                        <div className="absolute top-2 left-2 bg-amber-500 rounded-full w-8 h-8 flex items-center justify-center font-bold text-sm">
+                          {item.score}
+                        </div>
+                      )}
+                    </div>
+                    <div className="p-2 sm:p-3">
+                      <h3 className="font-bold text-xs sm:text-sm mb-1 truncate font-mono">{item.title}</h3>
+                      <p className="text-xs text-slate-400 font-mono">
+                        {item.volumes ? `Vol ${item.volumes}` : 'Ongoing'} • {item.type}
+                      </p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+
         {/* Stats Tab */}
         {activeTab === 'stats' && (
           <div className="space-y-4 sm:space-y-6">
@@ -1695,6 +2493,7 @@ const uniqueConsoles = [...new Set(games.map(g => g.console))].sort();
                         </div>
                       </div>
                     </div>
+
                   ))}
                 </div>
               )}
@@ -2253,7 +3052,335 @@ const uniqueConsoles = [...new Set(games.map(g => g.console))].sort();
             </div>
           </div>
         )}
+
+        {/* Add Anime Modal */}
+        {showAddAnimeModal && (
+          <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center p-4 z-50 overflow-y-auto">
+            <div className="bg-slate-800 rounded-sm max-w-4xl w-full border-4 border-pink-600 shadow-2xl my-8 relative max-h-[90vh] overflow-y-auto">
+              <div className="absolute top-0 left-0 right-0 h-3 sm:h-4 bg-slate-900 rounded-t-sm"></div>
+              <div className="p-4 sm:p-6 pt-6 sm:pt-8">
+                <div className="flex justify-between items-center mb-4 sm:mb-6">
+                  <h2 className="text-xl sm:text-2xl font-bold text-white flex items-center gap-2 font-mono">
+                    <Plus className="w-5 h-5 sm:w-6 sm:h-6" />
+                    ADD ANIME
+                  </h2>
+                  <button
+                    onClick={() => {
+                      setShowAddAnimeModal(false);
+                      setAnimeSearchQuery('');
+                      setAnimeSearchResults([]);
+                    }}
+                    className="p-2 hover:bg-slate-700 rounded transition-colors"
+                  >
+                    <X className="w-5 h-5 sm:w-6 sm:h-6" />
+                  </button>
+                </div>
+
+                <div className="mb-4 sm:mb-6">
+                  <label className="block text-pink-400 text-sm font-semibold mb-2 font-mono">
+                    🔍 SEARCH ON ANILIST
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={animeSearchQuery}
+                      onChange={(e) => setAnimeSearchQuery(e.target.value)}
+                      onKeyPress={(e) => e.key === 'Enter' && handleSearchAnime()}
+                      placeholder="Search anime... (e.g., Attack on Titan)"
+                      className="flex-1 px-3 sm:px-4 py-2 bg-slate-700 text-white rounded-sm border-2 border-slate-600 focus:outline-none focus:border-pink-500 font-mono text-sm"
+                    />
+                    <button
+                      onClick={handleSearchAnime}
+                      disabled={isSearchingAnime || !animeSearchQuery}
+                      className="px-4 sm:px-6 py-2 bg-pink-600 text-white rounded-sm hover:bg-pink-700 transition-all font-bold border-4 border-pink-500 font-mono text-sm disabled:opacity-50 flex items-center gap-2"
+                    >
+                      <Search className={`w-4 h-4 ${isSearchingAnime ? 'animate-spin' : ''}`} />
+                      {isSearchingAnime ? 'SEARCHING...' : 'SEARCH'}
+                    </button>
+                  </div>
+                </div>
+
+                {animeSearchResults.length > 0 && (
+                  <div className="mb-4 sm:mb-6 max-h-96 overflow-y-auto bg-slate-700 rounded-sm border-2 border-pink-600">
+                    <p className="text-pink-400 text-sm font-mono font-semibold p-3 border-b border-pink-600">
+                      SELECT AN ANIME:
+                    </p>
+                    {animeSearchResults.map(anime => (
+                      <button
+                        key={anime.id}
+                        onClick={() => addAnimeFromSearch(anime)}
+                        className="w-full p-3 hover:bg-slate-600 transition-colors text-left flex items-center gap-3 border-b border-slate-600 last:border-0"
+                      >
+                        {anime.coverImage?.large ? (
+                          <img src={anime.coverImage.large} alt={anime.title.romaji} className="w-10 h-14 sm:w-12 sm:h-16 object-cover rounded" />
+                        ) : (
+                          <div className="w-10 h-14 sm:w-12 sm:h-16 bg-slate-800 rounded flex items-center justify-center">
+                            <Star className="w-5 h-5 sm:w-6 sm:h-6 text-pink-600" />
+                          </div>
+                        )}
+                        <div className="flex-1 min-w-0">
+                          <p className="font-bold text-white truncate font-mono text-sm">
+                            {anime.title.english || anime.title.romaji}
+                          </p>
+                          <p className="text-xs sm:text-sm text-slate-400 font-mono">
+                            {anime.format} • {anime.episodes ? `${anime.episodes} eps` : 'Ongoing'}
+                          </p>
+                          {anime.seasonYear && (
+                            <p className="text-xs text-slate-500 font-mono">{anime.seasonYear}</p>
+                          )}
+                          {anime.genres && anime.genres.length > 0 && (
+                            <p className="text-xs text-pink-400 font-mono">{anime.genres.slice(0, 3).join(', ')}</p>
+                          )}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Add Manga Modal */}
+        {showAddMangaModal && (
+          <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center p-4 z-50 overflow-y-auto">
+            <div className="bg-slate-800 rounded-sm max-w-4xl w-full border-4 border-blue-600 shadow-2xl my-8 relative max-h-[90vh] overflow-y-auto">
+              <div className="absolute top-0 left-0 right-0 h-3 sm:h-4 bg-slate-900 rounded-t-sm"></div>
+              <div className="p-4 sm:p-6 pt-6 sm:pt-8">
+                <div className="flex justify-between items-center mb-4 sm:mb-6">
+                  <h2 className="text-xl sm:text-2xl font-bold text-white flex items-center gap-2 font-mono">
+                    <Plus className="w-5 h-5 sm:w-6 sm:h-6" />
+                    ADD MANGA
+                  </h2>
+                  <button
+                    onClick={() => {
+                      setShowAddMangaModal(false);
+                      setMangaSearchQuery('');
+                      setMangaSearchResults([]);
+                    }}
+                    className="p-2 hover:bg-slate-700 rounded transition-colors"
+                  >
+                    <X className="w-5 h-5 sm:w-6 sm:h-6" />
+                  </button>
+                </div>
+
+                <div className="mb-4 sm:mb-6">
+                  <label className="block text-blue-400 text-sm font-semibold mb-2 font-mono">
+                    🔍 SEARCH ON ANILIST
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={mangaSearchQuery}
+                      onChange={(e) => setMangaSearchQuery(e.target.value)}
+                      onKeyPress={(e) => e.key === 'Enter' && handleSearchManga()}
+                      placeholder="Search manga... (e.g., One Piece)"
+                      className="flex-1 px-3 sm:px-4 py-2 bg-slate-700 text-white rounded-sm border-2 border-slate-600 focus:outline-none focus:border-blue-500 font-mono text-sm"
+                    />
+                    <button
+                      onClick={handleSearchManga}
+                      disabled={isSearchingManga || !mangaSearchQuery}
+                      className="px-4 sm:px-6 py-2 bg-blue-600 text-white rounded-sm hover:bg-blue-700 transition-all font-bold border-4 border-blue-500 font-mono text-sm disabled:opacity-50 flex items-center gap-2"
+                    >
+                      <Search className={`w-4 h-4 ${isSearchingManga ? 'animate-spin' : ''}`} />
+                      {isSearchingManga ? 'SEARCHING...' : 'SEARCH'}
+                    </button>
+                  </div>
+                </div>
+
+                {mangaSearchResults.length > 0 && (
+                  <div className="mb-4 sm:mb-6 max-h-96 overflow-y-auto bg-slate-700 rounded-sm border-2 border-blue-600">
+                    <p className="text-blue-400 text-sm font-mono font-semibold p-3 border-b border-blue-600">
+                      SELECT A MANGA:
+                    </p>
+                    {mangaSearchResults.map(manga => (
+                      <button
+                        key={manga.id}
+                        onClick={() => addMangaFromSearch(manga)}
+                        className="w-full p-3 hover:bg-slate-600 transition-colors text-left flex items-center gap-3 border-b border-slate-600 last:border-0"
+                      >
+                        {manga.coverImage?.large ? (
+                          <img src={manga.coverImage.large} alt={manga.title.romaji} className="w-10 h-14 sm:w-12 sm:h-16 object-cover rounded" />
+                        ) : (
+                          <div className="w-10 h-14 sm:w-12 sm:h-16 bg-slate-800 rounded flex items-center justify-center">
+                            <TrendingUp className="w-5 h-5 sm:w-6 sm:h-6 text-blue-600" />
+                          </div>
+                        )}
+                        <div className="flex-1 min-w-0">
+                          <p className="font-bold text-white truncate font-mono text-sm">
+                            {manga.title.english || manga.title.romaji}
+                          </p>
+                          <p className="text-xs sm:text-sm text-slate-400 font-mono">
+                            {manga.format} • {manga.volumes ? `${manga.volumes} volumes` : 'Ongoing'}
+                          </p>
+                          {manga.startDate?.year && (
+                            <p className="text-xs text-slate-500 font-mono">{manga.startDate.year}</p>
+                          )}
+                          {manga.genres && manga.genres.length > 0 && (
+                            <p className="text-xs text-blue-400 font-mono">{manga.genres.slice(0, 3).join(', ')}</p>
+                          )}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
+
+        {/* Anime Details Modal */}
+        {showAnimeDetails && (
+          <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center p-4 z-50 overflow-y-auto">
+            <div className="bg-slate-800 rounded-sm max-w-3xl w-full border-4 border-pink-600 shadow-2xl relative max-h-[90vh] overflow-y-auto">
+              <div className="absolute top-0 left-0 right-0 h-3 sm:h-4 bg-slate-900 rounded-t-sm"></div>
+              
+              {showAnimeDetails.banner_url && (
+                <div className="h-48 overflow-hidden">
+                  <img src={showAnimeDetails.banner_url} alt="" className="w-full h-full object-cover opacity-50" />
+                </div>
+              )}
+              
+              <div className="p-6 pt-8">
+                <button
+                  onClick={() => setShowAnimeDetails(null)}
+                  className="absolute top-4 right-4 p-2 hover:bg-slate-700 rounded transition-colors z-10"
+                >
+                  <X className="w-6 h-6" />
+                </button>
+
+                <div className="flex gap-6 mb-6">
+                  <div className="flex-shrink-0">
+                    <img 
+                      src={showAnimeDetails.cover_url} 
+                      alt={showAnimeDetails.title}
+                      className="w-48 h-64 object-cover rounded-sm border-4 border-pink-600"
+                    />
+                  </div>
+
+                  <div className="flex-1">
+                    <h2 className="text-2xl font-black text-white font-mono mb-2">
+                      {showAnimeDetails.title}
+                    </h2>
+                    {showAnimeDetails.title_english && showAnimeDetails.title_english !== showAnimeDetails.title && (
+                      <p className="text-slate-400 font-mono mb-4">{showAnimeDetails.title_english}</p>
+                    )}
+
+                    <div className="grid grid-cols-2 gap-3 mb-4">
+                      <div className="bg-slate-700 p-3 rounded-sm">
+                        <p className="text-slate-400 text-xs font-mono">FORMAT</p>
+                        <p className="text-white font-bold font-mono">{showAnimeDetails.format}</p>
+                      </div>
+                      <div className="bg-slate-700 p-3 rounded-sm">
+                        <p className="text-slate-400 text-xs font-mono">EPISODES</p>
+                        <p className="text-white font-bold font-mono">{showAnimeDetails.episodes || '?'}</p>
+                      </div>
+                      <div className="bg-slate-700 p-3 rounded-sm">
+                        <p className="text-slate-400 text-xs font-mono">YEAR</p>
+                        <p className="text-white font-bold font-mono">{showAnimeDetails.year || '?'}</p>
+                      </div>
+                      <div className="bg-slate-700 p-3 rounded-sm">
+                        <p className="text-slate-400 text-xs font-mono">SEASON</p>
+                        <p className="text-white font-bold font-mono">{showAnimeDetails.season || '?'}</p>
+                      </div>
+                    </div>
+
+                    <div className="flex gap-3 mb-4">
+                      <select
+                        value={showAnimeDetails.status}
+                        onChange={async (e) => {
+                          const newStatus = e.target.value;
+                          const updated = { ...showAnimeDetails, status: newStatus };
+                          
+                          setAnime(anime.map(a => a.id === updated.id ? updated : a));
+                          setShowAnimeDetails(updated);
+                          
+                          await supabase
+                            .from('anime')
+                            .update({ status: newStatus })
+                            .eq('id', updated.id);
+                        }}
+                        className="flex-1 px-4 py-2 bg-slate-700 text-white rounded-sm border-2 border-pink-600 focus:outline-none font-mono text-sm"
+                      >
+                        <option value="watching">Watching</option>
+                        <option value="completed">Completed</option>
+                        <option value="plan_to_watch">Plan to Watch</option>
+                        <option value="dropped">Dropped</option>
+                        <option value="on_hold">On Hold</option>
+                      </select>
+
+                      <select
+                        value={showAnimeDetails.score}
+                        onChange={async (e) => {
+                          const newScore = parseInt(e.target.value);
+                          const updated = { ...showAnimeDetails, score: newScore };
+                          
+                          setAnime(anime.map(a => a.id === updated.id ? updated : a));
+                          setShowAnimeDetails(updated);
+                          
+                          await supabase
+                            .from('anime')
+                            .update({ score: newScore })
+                            .eq('id', updated.id);
+                        }}
+                        className="w-24 px-4 py-2 bg-amber-600 text-white rounded-sm border-2 border-amber-500 focus:outline-none font-mono text-sm font-bold"
+                      >
+                        <option value="0">⭐ 0</option>
+                        <option value="1">⭐ 1</option>
+                        <option value="2">⭐ 2</option>
+                        <option value="3">⭐ 3</option>
+                        <option value="4">⭐ 4</option>
+                        <option value="5">⭐ 5</option>
+                        <option value="6">⭐ 6</option>
+                        <option value="7">⭐ 7</option>
+                        <option value="8">⭐ 8</option>
+                        <option value="9">⭐ 9</option>
+                        <option value="10">⭐ 10</option>
+                      </select>
+                    </div>
+
+                    {showAnimeDetails.genres && showAnimeDetails.genres.length > 0 && (
+                      <div className="flex flex-wrap gap-2 mb-4">
+                        {showAnimeDetails.genres.map(genre => (
+                          <span key={genre} className="px-3 py-1 bg-pink-600 text-white rounded-full text-xs font-mono">
+                            {genre}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex gap-3">
+                  <button
+                    onClick={async () => {
+                      if (window.confirm('Eliminare questo anime?')) {
+                        setAnime(anime.filter(a => a.id !== showAnimeDetails.id));
+                        await supabase.from('anime').delete().eq('id', showAnimeDetails.id);
+                        setShowAnimeDetails(null);
+                      }
+                    }}
+                    className="flex-1 px-6 py-3 bg-red-600 text-white rounded-sm hover:bg-red-700 transition-all font-bold border-4 border-red-500 font-mono"
+                  >
+                    <Trash2 className="w-4 h-4 inline mr-2" />
+                    Delete
+                  </button>
+                  {showAnimeDetails.anilist_id && (
+                    <a
+                      href={`https://anilist.co/anime/${showAnimeDetails.anilist_id}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex-1 px-6 py-3 bg-pink-600 text-white rounded-sm hover:bg-pink-700 transition-all font-bold border-4 border-pink-500 font-mono text-center"
+                    >
+                      View on AniList
+                    </a>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
       {/* Footer */}
       <div className="mt-auto border-t-4 border-slate-700 bg-slate-900 py-4 sm:py-6 relative overflow-hidden">
