@@ -2,6 +2,9 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { Search, Plus, Grid3x3, List, Trash2, Edit2, X, BarChart3, Heart, Camera, TrendingUp, Package, Star, Gamepad2, Download, Upload, RefreshCw, Cloud, CloudOff, LogOut, User } from 'lucide-react';
 import { supabase } from './supabase';
 import achievementsImage from './assets/achievements.png';
+import AnimeCard from './components/AnimeCard';
+import MangaCard from './components/MangaCard';
+import localforage from 'localforage';
 
 const SERVER_API = import.meta.env.VITE_SUPABASE_BARCODE
 const THEGAMESDB_BASE_URL = import.meta.env.VITE_SUPABASE_TGDB
@@ -12,6 +15,13 @@ const generateUniqueId = () => {
   uniqueIdCounter++;
   return `${Date.now()}-${uniqueIdCounter}-${Math.random().toString(36).substr(2, 9)}`;
 };
+
+// Configure
+localforage.config({
+  name: 'saveslot',
+  storeName: 'data',
+  description: 'Save Slot local cache'
+});
 
 const CONSOLES = [
   // Sony
@@ -169,13 +179,62 @@ const CONSOLE_ICONS = {
   'XBOX': '🎮', 'XBOX 360': '🎮', 'XBOX ONE': '🎮', 'XBOX SERIES X/S': '🎮'
 };
 
+  const LazyImage = React.memo(({ src, alt, className }) => {
+    const [isLoaded, setIsLoaded] = useState(false);
+    const [isInView, setIsInView] = useState(false);
+    const imgRef = useRef();
+
+    useEffect(() => {
+      const observer = new IntersectionObserver(
+        ([entry]) => {
+          if (entry.isIntersecting) {
+            setIsInView(true);
+            observer.disconnect();
+          }
+        },
+        { rootMargin: '50px' }
+      );
+
+      if (imgRef.current) {
+        observer.observe(imgRef.current);
+      }
+
+      return () => observer.disconnect();
+    }, []);
+
+    return (
+      <div ref={imgRef} className={className}>
+        {isInView ? (
+          <>
+            {!isLoaded && (
+              <div className="w-full h-full bg-slate-900 animate-pulse" />
+            )}
+            <img
+              src={src}
+              alt={alt}
+              className={`${className} ${isLoaded ? 'opacity-100' : 'opacity-0'} transition-opacity`}
+              onLoad={() => setIsLoaded(true)}
+              loading="lazy"
+              decoding="async"
+            />
+          </>
+        ) : (
+          <div className="w-full h-full bg-slate-900 animate-pulse" />
+        )}
+      </div>
+    );
+  });
+
+  LazyImage.displayName = 'LazyImage';
+
+
 // Memoized Game Card Component
 const GameCard = React.memo(({ game, onEdit, onDelete, onMove, isWishlist }) => {
   return (
     <div className={`bg-slate-800 rounded-sm border-4 ${isWishlist ? 'border-purple-700 hover:border-purple-600' : 'border-slate-700 hover:border-slate-600'} overflow-hidden transition-all shadow-lg group`}>
       <div className="aspect-[3/4] bg-slate-900 relative overflow-hidden">
         {game.cover_url ? (
-          <img src={game.cover_url} alt={game.title} className="w-full h-full object-cover" loading="lazy" />
+          <LazyImage src={game.cover_url} alt={game.title} className="w-full h-full object-cover" loading="lazy" />
         ) : (
           <div className="w-full h-full flex items-center justify-center">
             {isWishlist ? (
@@ -291,37 +350,31 @@ function App() {
     checkAuth();
   }, []);
 
-const checkAuth = async () => {
-  const storedAuth = localStorage.getItem('saveslot-auth');
-  
-  if (storedAuth) {
-    try {
-      const auth = JSON.parse(storedAuth);
+  const checkAuth = async () => {
+    const savedAuth = await localforage.getItem('saveslot-auth');
+    
+    if (savedAuth) {
+      const { userId: uid, username: uname } = savedAuth;
       
-      // Verify user still exists in database
-      const { data, error } = await supabase
+      // Verify user exists
+      const { data: user } = await supabase
         .from('users')
         .select('id, username')
-        .eq('id', auth.userId)
+        .eq('id', uid)
         .single();
       
-      if (!error && data) {
-        setUserId(data.id);
-        setUsername(data.username);
-        await loadFromSupabase(data.id);
+      if (user) {
+        setUserId(uid);
+        setUsername(uname);
+        setShowLoginModal(false);
+        await loadFromSupabase(uid);
       } else {
-        // Invalid auth, show login
-        localStorage.removeItem('saveslot-auth');
         setShowLoginModal(true);
       }
-    } catch (error) {
-      console.error('Auth check error:', error);
+    } else {
       setShowLoginModal(true);
     }
-  } else {
-    setShowLoginModal(true);
-  }
-};
+  };
 
   // Calculate collection value - Simple estimation based on console/year
   const calculateCollectionValue = async () => {
@@ -392,10 +445,10 @@ const checkAuth = async () => {
 const updateAllCovers = async () => {
   if (!window.confirm(
     `⚠️ ATTENZIONE\n\n` +
-    `Questa operazione aggiornerà le copertine di TUTTI i ${games.length} giochi.\n\n` +
-    `• Ci vorranno circa ${Math.ceil(games.length * 2 / 60)} minuti\n` +
+    `Questa operazione aggiornerà le copertine di TUTTI i giochi senza cover (${games.filter(g => !g.cover_url).length}).\n\n` +
+    `• Ci vorranno circa ${Math.ceil(games.filter(g => !g.cover_url).length * 2 / 60)} minuti\n` +
     `• L'API ha limiti (1 richiesta ogni 2 secondi)\n` +
-    `• Se un gioco non viene trovato, verrà saltato\n\n` +
+    `• Il progresso viene salvato ogni 10 giochi\n\n` +
     `Continuare?`
   )) {
     return;
@@ -405,6 +458,7 @@ const updateAllCovers = async () => {
   let updated = 0;
   let skipped = 0;
   let errors = 0;
+  let batch = [];
 
   try {
     const updatedGames = [...games];
@@ -412,21 +466,19 @@ const updateAllCovers = async () => {
     for (let i = 0; i < updatedGames.length; i++) {
       const game = updatedGames[i];
       
-      // Skip if already has cover
+      // Skip se ha già cover
       if (game.cover_url) {
         skipped++;
         continue;
       }
 
       try {
-        // Find console ID
         const consoleObj = CONSOLES.find(c => c.name === game.console);
         if (!consoleObj) {
           skipped++;
           continue;
         }
 
-        // Search on TheGamesDB
         const params = new URLSearchParams({
           name: game.title,
           include: 'boxart',
@@ -435,15 +487,14 @@ const updateAllCovers = async () => {
 
         const apiUrl = `${THEGAMESDB_BASE_URL}/Games/ByGameName?${params.toString()}`;
         const res = await fetch(apiUrl, { headers: { Accept: 'application/json' } });
-        const txt = await res.text();
         
         if (!res.ok) {
           errors++;
-          console.error(`Error for ${game.title}:`, res.status);
           await new Promise(resolve => setTimeout(resolve, 2000));
           continue;
         }
 
+        const txt = await res.text();
         const data = JSON.parse(txt);
 
         if (data.data?.games && data.data.games.length > 0) {
@@ -461,8 +512,16 @@ const updateAllCovers = async () => {
 
           if (cover_url) {
             updatedGames[i].cover_url = cover_url;
+            batch.push({ id: game.id, cover_url });
             updated++;
-            console.log(`✅ Updated ${i + 1}/${games.length}: ${game.title}`);
+            
+            console.log(`✅ [${updated}] ${game.title}`);
+            
+            // SALVA BATCH ogni 10 aggiornamenti
+            if (batch.length >= 10) {
+              await saveBatchCovers(batch);
+              batch = [];
+            }
           } else {
             skipped++;
           }
@@ -470,7 +529,6 @@ const updateAllCovers = async () => {
           skipped++;
         }
 
-        // Rate limiting: 2 seconds between requests
         await new Promise(resolve => setTimeout(resolve, 2000));
 
       } catch (error) {
@@ -479,7 +537,12 @@ const updateAllCovers = async () => {
       }
     }
 
-    // Update state
+    // Salva ultimo batch residuo
+    if (batch.length > 0) {
+      await saveBatchCovers(batch);
+    }
+
+    // Aggiorna state finale
     setGames(updatedGames);
 
     alert(
@@ -491,9 +554,29 @@ const updateAllCovers = async () => {
 
   } catch (error) {
     console.error('Error in updateAllCovers:', error);
-    alert('❌ Errore durante l\'aggiornamento. Operazione interrotta.');
+    alert('❌ Errore durante l\'aggiornamento. Progresso salvato.');
   } finally {
     setIsLoadingPrices(false);
+  }
+};
+
+// Helper: Salva batch di cover su Supabase
+const saveBatchCovers = async (batch) => {
+  if (!userId || batch.length === 0) return;
+  
+  try {
+    // Aggiorna solo le cover in batch
+    for (const item of batch) {
+      await supabase
+        .from('games')
+        .update({ cover_url: item.cover_url })
+        .eq('id', item.id)
+        .eq('user_id', userId);
+    }
+    
+    console.log(`💾 Saved batch of ${batch.length} covers to Supabase`);
+  } catch (error) {
+    console.error('Error saving batch:', error);
   }
 };
 
@@ -966,28 +1049,44 @@ const checkAchievements = useCallback(() => {
         }
       }
 
-      // Load anime
+    } 
+    
+    try {
       const { data: animeData, error: animeError } = await supabase
         .from('anime')
         .select('*')
         .eq('user_id', uid)
         .order('added_date', { ascending: false });
 
-      if (!animeError && animeData) {
+      if (animeError) {
+        console.error('Error loading anime:', animeError);
+      } else if (animeData) {
+        console.log(`✅ Loaded ${animeData.length} anime from database`);
         setAnime(animeData);
       }
+    } catch (error) {
+      console.error('Error loading anime:', error);
+    }
 
-      // Load manga
+    // Load manga
+    try {
       const { data: mangaData, error: mangaError } = await supabase
         .from('manga')
         .select('*')
         .eq('user_id', uid)
         .order('added_date', { ascending: false });
 
-      if (!mangaError && mangaData) {
+      if (mangaError) {
+        console.error('Error loading manga:', mangaError);
+      } else if (mangaData) {
+        console.log(`✅ Loaded ${mangaData.length} manga from database`);
         setManga(mangaData);
       }
-
+    } catch (error) {
+      console.error('Error loading manga:', error);
+    }   
+    
+    try {
       // Load AniList username from database
       const { data: userData } = await supabase
         .from('users')
@@ -997,21 +1096,12 @@ const checkAchievements = useCallback(() => {
 
       if (userData?.anilist_username) {
         setAnilistUsername(userData.anilist_username);
-        localStorage.setItem('anilist-username', userData.anilist_username);
+        await localforage.setItem('anilist-username', userData.anilist_username);
         console.log('✅ Loaded AniList username:', userData.anilist_username);
       }
-
-      if (collectionData && collectionData.length > 0) {
-        localStorage.setItem('saveslot-last-good-backup', JSON.stringify({
-          games: collectionData,
-          wishlist: wishlistData || [],
-          timestamp: new Date().toISOString(),
-          userId: uid
-        }));
-        console.log('✅ Auto-backup created after load');
-      }
-
-    } finally {
+    }
+    
+    finally {
       setIsSyncing(false);
     }
   };
@@ -1043,11 +1133,7 @@ const checkAchievements = useCallback(() => {
       }
 
       // Save auth to localStorage
-      const auth = {
-        userId: data.id,
-        username: data.username
-      };
-      localStorage.setItem('saveslot-auth', JSON.stringify(auth));
+      await localforage.setItem('saveslot-auth', { userId, username });
 
       setUserId(data.id);
       setUsername(data.username);
@@ -1064,9 +1150,13 @@ const checkAchievements = useCallback(() => {
     }
   };
 
+  const handleLocalForageRemoveSaveslothAuth = async () => {
+    await localforage.removeItem('saveslot-auth');
+  }
+
   const handleLogout = () => {
     if (window.confirm('Vuoi davvero disconnetterti?')) {
-      localStorage.removeItem('saveslot-auth');
+      handleLocalForageRemoveSaveslothAuth()
       setUserId(null);
       setUsername('');
       setGames([]);
@@ -1163,9 +1253,9 @@ const saveToSupabase = useCallback(async (gamesData, wishlistData) => {
     setSyncStatus('synced');
 
     // ALWAYS backup to localStorage
-    localStorage.setItem('saveslot-collection', JSON.stringify(gamesData));
-    localStorage.setItem('saveslot-wishlist', JSON.stringify(wishlistData));
-    localStorage.setItem('saveslot-last-backup', new Date().toISOString());
+    await localforage.setItem('saveslot-collection', gamesData);
+    await localforage.setItem('saveslot-wishlist', wishlistData);
+    await localforage.setItem('saveslot-last-backup', new Date().toISOString());
     
     console.log('✅ Save completed successfully');
 
@@ -1175,15 +1265,15 @@ const saveToSupabase = useCallback(async (gamesData, wishlistData) => {
 
     // FALLBACK: Save to localStorage
     try {
-      localStorage.setItem('saveslot-collection', JSON.stringify(gamesData));
-      localStorage.setItem('saveslot-wishlist', JSON.stringify(wishlistData));
-      localStorage.setItem('saveslot-error-backup', JSON.stringify({
-        games: gamesData,
-        wishlist: wishlistData,
-        timestamp: new Date().toISOString(),
-        error: error.message
-      }));
-      console.log('💾 Emergency backup saved to localStorage');
+        await localforage.setItem('saveslot-collection', gamesData);
+        await localforage.setItem('saveslot-wishlist', wishlistData);
+        await localforage.setItem('saveslot-error-backup', {
+          games: gamesData,
+          wishlist: wishlistData,
+          timestamp: new Date().toISOString(),
+          error: error.message
+        });
+        console.log('💾 Emergency backup saved to localforage');
     } catch (backupError) {
       console.error('❌ Even backup failed:', backupError);
     }
@@ -1202,13 +1292,27 @@ const saveToSupabase = useCallback(async (gamesData, wishlistData) => {
     return () => window.removeEventListener('error', handleError);
   }, []);
 
-  // Debounced save effect
+  // Save only if actually changed (deep comparison)
+  const lastSaveRef = useRef({ games: [], wishlist: [] });
+
   useEffect(() => {
+    if (!userId) return;
+    
+    // Check if actually changed
+    const gamesChanged = JSON.stringify(games) !== JSON.stringify(lastSaveRef.current.games);
+    const wishlistChanged = JSON.stringify(wishlist) !== JSON.stringify(lastSaveRef.current.wishlist);
+    
+    if (!gamesChanged && !wishlistChanged) {
+      console.log('⏭️ No changes detected, skipping save');
+      return;
+    }
+    
     const timeoutId = setTimeout(() => {
-      if (userId) {
-        saveToSupabase(games, wishlist);
-      }
-    }, 1000);
+      console.log('💾 Saving changes to Supabase...');
+      saveToSupabase(games, wishlist);
+      lastSaveRef.current = { games, wishlist };
+    }, 2000); // Aumentato a 2 secondi
+
     return () => clearTimeout(timeoutId);
   }, [games, wishlist, userId, saveToSupabase]);
 
@@ -1713,20 +1817,64 @@ const addGame = () => {
   }, [wishlist, searchTerm, filterConsole, filterVersion]);
 
   const filteredAnime = useMemo(() => {
-    return anime.filter(item => {
-      const matchesSearch = item.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                          item.title_english?.toLowerCase().includes(searchTerm.toLowerCase());
-      return matchesSearch;
-    });
+    if (!searchTerm) return anime;
+    
+    const lower = searchTerm.toLowerCase();
+    return anime.filter(item => 
+      item.title?.toLowerCase().includes(lower) ||
+      item.title_english?.toLowerCase().includes(lower)
+    );
   }, [anime, searchTerm]);
 
+  // Memoize manga filtrati
   const filteredManga = useMemo(() => {
-    return manga.filter(item => {
-      const matchesSearch = item.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                          item.title_english?.toLowerCase().includes(searchTerm.toLowerCase());
-      return matchesSearch;
-    });
+    if (!searchTerm) return manga;
+    
+    const lower = searchTerm.toLowerCase();
+    return manga.filter(item => 
+      item.title?.toLowerCase().includes(lower) ||
+      item.title_english?.toLowerCase().includes(lower)
+    );
   }, [manga, searchTerm]);
+
+    const animeStats = useMemo(() => {
+      if (anime.length === 0) {
+        return { completed: 0, watching: 0, planToWatch: 0, dropped: 0, onHold: 0, avgScore: 0 };
+      }
+      
+      const completed = anime.filter(a => a.status === 'completed').length;
+      const watching = anime.filter(a => a.status === 'watching').length;
+      const planToWatch = anime.filter(a => a.status === 'plan_to_watch').length;
+      const dropped = anime.filter(a => a.status === 'dropped').length;
+      const onHold = anime.filter(a => a.status === 'on_hold').length;
+      
+      const scoredAnime = anime.filter(a => a.score > 0);
+      const avgScore = scoredAnime.length > 0 
+        ? (scoredAnime.reduce((acc, a) => acc + a.score, 0) / scoredAnime.length).toFixed(1)
+        : 0;
+      
+      return { completed, watching, planToWatch, dropped, onHold, avgScore };
+    }, [anime]);
+
+    // Memoize manga statistics
+    const mangaStats = useMemo(() => {
+      if (manga.length === 0) {
+        return { completed: 0, reading: 0, planToRead: 0, dropped: 0, onHold: 0, avgScore: 0 };
+      }
+      
+      const completed = manga.filter(m => m.status === 'completed').length;
+      const reading = manga.filter(m => m.status === 'reading').length;
+      const planToRead = manga.filter(m => m.status === 'plan_to_read').length;
+      const dropped = manga.filter(m => m.status === 'dropped').length;
+      const onHold = manga.filter(m => m.status === 'on_hold').length;
+      
+      const scoredManga = manga.filter(m => m.score > 0);
+      const avgScore = scoredManga.length > 0 
+        ? (scoredManga.reduce((acc, m) => acc + m.score, 0) / scoredManga.length).toFixed(1)
+        : 0;
+      
+      return { completed, reading, planToRead, dropped, onHold, avgScore };
+    }, [manga]);
 
   const totalGames = games.length;
   const totalWishlist = wishlist.length;
@@ -1746,8 +1894,6 @@ const addGame = () => {
     })).filter(stat => stat.count > 0);
   }, [games]);
 
-const uniqueConsoles = [...new Set(games.map(g => g.console))].sort();
-  const uniqueVersions = [...new Set(games.map(g => g.version).filter(Boolean))].sort();
 
   // Show login modal if not authenticated
   if (showLoginModal && !userId) {
@@ -2108,7 +2254,7 @@ const uniqueConsoles = [...new Set(games.map(g => g.console))].sort();
         <div key={game.id} className="bg-slate-800 rounded-sm border-4 border-slate-700 hover:border-slate-600 p-4 transition-all shadow-lg flex items-center gap-4">
           <div className="w-16 h-24 bg-slate-900 rounded overflow-hidden flex-shrink-0">
             {game.cover_url ? (
-              <img src={game.cover_url} alt={game.title} className="w-full h-full object-cover" loading="lazy" />
+              <LazyImage src={game.cover_url} alt={game.title} className="w-full h-full object-cover" loading="lazy" />
             ) : (
               <div className="w-full h-full flex items-center justify-center">
                 <Gamepad2 className="w-8 h-8 text-slate-700" />
@@ -2191,7 +2337,7 @@ const uniqueConsoles = [...new Set(games.map(g => g.console))].sort();
         <div key={game.id} className="bg-slate-800 rounded-sm border-4 border-purple-700 hover:border-purple-600 p-4 transition-all shadow-lg flex items-center gap-4">
           <div className="w-16 h-24 bg-slate-900 rounded overflow-hidden flex-shrink-0 relative">
             {game.cover_url ? (
-              <img src={game.cover_url} alt={game.title} className="w-full h-full object-cover" loading="lazy" />
+              <LazyImage src={game.cover_url} alt={game.title} className="w-full h-full object-cover" loading="lazy" />
             ) : (
               <div className="w-full h-full flex items-center justify-center">
                 <Heart className="w-8 h-8 text-purple-700" />
@@ -2312,39 +2458,17 @@ const uniqueConsoles = [...new Set(games.map(g => g.console))].sort();
                 </button>
               </div>
             ) : (
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 sm:gap-4">
+                <div className="h-[calc(100vh-300px)]">
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 sm:gap-4">
                     {filteredAnime.map(item => (
-                      <div 
-                        key={item.id} 
+                      <AnimeCard
+                        key={item.id}
+                        item={item}
                         onClick={() => setShowAnimeDetails(item)}
-                        className="bg-slate-800 rounded-sm border-4 border-pink-700 hover:border-pink-600 overflow-hidden transition-all shadow-lg group cursor-pointer"
-                      >
-                    <div className="aspect-[3/4] bg-slate-900 relative overflow-hidden">
-                      {item.cover_url ? (
-                        <img src={item.cover_url} alt={item.title} className="w-full h-full object-cover" loading="lazy" />
-                      ) : (
-                        <div className="w-full h-full flex items-center justify-center">
-                          <Star className="w-12 h-12 sm:w-16 sm:h-16 text-pink-700" />
-                        </div>
-                      )}
-                      <div className="absolute top-2 right-2 bg-pink-600 rounded px-2 py-1 text-xs font-bold font-mono">
-                        {item.status?.toUpperCase()}
-                      </div>
-                      {item.score > 0 && (
-                        <div className="absolute top-2 left-2 bg-amber-500 rounded-full w-8 h-8 flex items-center justify-center font-bold text-sm">
-                          {item.score}
-                        </div>
-                      )}
-                    </div>
-                    <div className="p-2 sm:p-3">
-                      <h3 className="font-bold text-xs sm:text-sm mb-1 truncate font-mono">{item.title}</h3>
-                      <p className="text-xs text-slate-400 font-mono">
-                        {item.episodes ? `${item.episodes} eps` : 'Ongoing'} • {item.format}
-                      </p>
-                    </div>
+                      />
+                    ))}
                   </div>
-                ))}
-              </div>
+                </div>
             )}
           </>
         )}
@@ -2380,33 +2504,15 @@ const uniqueConsoles = [...new Set(games.map(g => g.console))].sort();
               </div>
             ) : (
               <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 sm:gap-4">
-                {filteredManga.map(item => (
-                  <div key={item.id} className="bg-slate-800 rounded-sm border-4 border-blue-700 hover:border-blue-600 overflow-hidden transition-all shadow-lg group">
-                    <div className="aspect-[3/4] bg-slate-900 relative overflow-hidden">
-                      {item.cover_url ? (
-                        <img src={item.cover_url} alt={item.title} className="w-full h-full object-cover" loading="lazy" />
-                      ) : (
-                        <div className="w-full h-full flex items-center justify-center">
-                          <TrendingUp className="w-12 h-12 sm:w-16 sm:h-16 text-blue-700" />
-                        </div>
-                      )}
-                      <div className="absolute top-2 right-2 bg-blue-600 rounded px-2 py-1 text-xs font-bold font-mono">
-                        {item.status?.toUpperCase()}
-                      </div>
-                      {item.score > 0 && (
-                        <div className="absolute top-2 left-2 bg-amber-500 rounded-full w-8 h-8 flex items-center justify-center font-bold text-sm">
-                          {item.score}
-                        </div>
-                      )}
-                    </div>
-                    <div className="p-2 sm:p-3">
-                      <h3 className="font-bold text-xs sm:text-sm mb-1 truncate font-mono">{item.title}</h3>
-                      <p className="text-xs text-slate-400 font-mono">
-                        {item.volumes ? `Vol ${item.volumes}` : 'Ongoing'} • {item.type}
-                      </p>
-                    </div>
-                  </div>
-                ))}
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 sm:gap-4">
+                  {filteredManga.map(item => (
+                    <MangaCard
+                      key={item.id}
+                      item={item}
+                      onClick={() => setShowMangaDetails(item)}
+                    />
+                  ))}
+                </div>
               </div>
             )}
           </>
@@ -2497,6 +2603,72 @@ const uniqueConsoles = [...new Set(games.map(g => g.console))].sort();
                   ))}
                 </div>
               )}
+            </div>
+
+            <div className="bg-slate-800 rounded-sm border-4 border-slate-700 p-4 sm:p-6 relative overflow-hidden">
+              <div className="absolute top-0 left-0 right-0 h-3 bg-slate-950"></div>
+              <h3 className="text-lg sm:text-xl font-bold mb-4 flex items-center gap-2 font-mono mt-2">
+                <TrendingUp className="w-5 h-5 sm:w-6 sm:h-6" />
+                ANIME BREAKDOWN
+              </h3>
+                <div className="space-y-3">
+                  <div className="bg-slate-700 rounded-sm p-3 sm:p-4 border-2 border-pink-600">
+                    <p className="text-slate-400 text-xs sm:text-sm mb-1 font-mono">COMPLETED</p>
+                    <p className="text-2xl sm:text-3xl font-black text-white font-mono">
+                      {animeStats.completed}
+                    </p>
+                  </div>
+                  <div className="bg-slate-700 rounded-sm p-3 sm:p-4 border-2 border-pink-600">
+                    <p className="text-slate-400 text-xs sm:text-sm mb-1 font-mono">WATCHING</p>
+                    <p className="text-2xl sm:text-3xl font-black text-white font-mono">
+                      {animeStats.watching}
+                    </p>
+                  </div>
+                  <div className="bg-slate-700 rounded-sm p-3 sm:p-4 border-2 border-pink-600">
+                    <p className="text-slate-400 text-xs sm:text-sm mb-1 font-mono">PLAN TO WATCH</p>
+                    <p className="text-2xl sm:text-3xl font-black text-white font-mono">
+                      {animeStats.planToWatch}
+                    </p>
+                  </div>
+                  <div className="bg-slate-700 rounded-sm p-3 sm:p-4 border-2 border-amber-600">
+                    <p className="text-slate-400 text-xs sm:text-sm mb-1 font-mono">AVG SCORE</p>
+                    <p className="text-2xl sm:text-3xl font-black text-white font-mono">
+                      {animeStats.avgScore}
+                    </p>
+                  </div>
+                </div>
+            </div>
+
+            <div className="bg-slate-800 rounded-sm border-4 border-slate-700 p-4 sm:p-6 relative overflow-hidden">
+              <div className="absolute top-0 left-0 right-0 h-3 bg-slate-950"></div>
+              <h3 className="text-lg sm:text-xl font-bold mb-4 flex items-center gap-2 font-mono mt-2">
+                <TrendingUp className="w-5 h-5 sm:w-6 sm:h-6" />
+                MANGA BREAKDOWN
+              </h3>
+                  <div className="bg-slate-700 rounded-sm p-3 sm:p-4 border-2 border-blue-600">
+                    <p className="text-slate-400 text-xs sm:text-sm mb-1 font-mono">COMPLETED</p>
+                    <p className="text-2xl sm:text-3xl font-black text-white font-mono">
+                      {mangaStats.completed}
+                    </p>
+                  </div>
+                  <div className="bg-slate-700 rounded-sm p-3 sm:p-4 border-2 border-blue-600">
+                    <p className="text-slate-400 text-xs sm:text-sm mb-1 font-mono">READING</p>
+                    <p className="text-2xl sm:text-3xl font-black text-white font-mono">
+                      {mangaStats.reading}
+                    </p>
+                  </div>
+                  <div className="bg-slate-700 rounded-sm p-3 sm:p-4 border-2 border-blue-600">
+                    <p className="text-slate-400 text-xs sm:text-sm mb-1 font-mono">PLAN TO READ</p>
+                    <p className="text-2xl sm:text-3xl font-black text-white font-mono">
+                      {mangaStats.planToRead}
+                    </p>
+                  </div>
+                  <div className="bg-slate-700 rounded-sm p-3 sm:p-4 border-2 border-amber-600">
+                    <p className="text-slate-400 text-xs sm:text-sm mb-1 font-mono">AVG SCORE</p>
+                    <p className="text-2xl sm:text-3xl font-black text-white font-mono">
+                      {mangaStats.avgScore}
+                    </p>
+                  </div>
             </div>
 
         {/* Achievements Section */}
@@ -2642,7 +2814,7 @@ const uniqueConsoles = [...new Set(games.map(g => g.console))].sort();
                           className="w-full p-3 hover:bg-slate-600 transition-colors text-left flex items-center gap-3 border-b border-slate-600 last:border-0"
                         >
                           {game.cover_url ? (
-                            <img src={game.cover_url} alt={game.game_title} className="w-10 h-14 sm:w-12 sm:h-16 object-cover rounded" />
+                            <LazyImage src={game.cover_url} alt={game.game_title} className="w-10 h-14 sm:w-12 sm:h-16 object-cover rounded" />
                           ) : (
                             <div className="w-10 h-14 sm:w-12 sm:h-16 bg-slate-800 rounded flex items-center justify-center">
                               <Gamepad2 className="w-5 h-5 sm:w-6 sm:h-6 text-slate-600" />
@@ -2743,7 +2915,7 @@ const uniqueConsoles = [...new Set(games.map(g => g.console))].sort();
                       PREVIEW
                     </label>
                     <div className="w-24 h-32 sm:w-32 sm:h-44 bg-slate-900 rounded overflow-hidden border-2 border-slate-600">
-                      <img src={newGame.cover_url} alt="Preview" className="w-full h-full object-cover" />
+                      <LazyImage src={newGame.cover_url} alt="Preview" className="w-full h-full object-cover" />
                     </div>
                   </div>
                 )}
@@ -2829,7 +3001,7 @@ const uniqueConsoles = [...new Set(games.map(g => g.console))].sort();
                         className="w-full p-3 hover:bg-slate-600 transition-colors text-left flex items-center gap-3 border-b border-slate-600 last:border-0"
                       >
                         {game.cover_url ? (
-                          <img src={game.cover_url} alt={game.game_title} className="w-10 h-14 sm:w-12 sm:h-16 object-cover rounded" />
+                          <LazyImage src={game.cover_url} alt={game.game_title} className="w-10 h-14 sm:w-12 sm:h-16 object-cover rounded" />
                         ) : (
                           <div className="w-10 h-14 sm:w-12 sm:h-16 bg-slate-800 rounded flex items-center justify-center">
                             <Gamepad2 className="w-5 h-5 sm:w-6 sm:h-6 text-slate-600" />
@@ -2924,7 +3096,7 @@ const uniqueConsoles = [...new Set(games.map(g => g.console))].sort();
                       CURRENT COVER
                     </label>
                     <div className="w-24 h-32 sm:w-32 sm:h-44 bg-slate-900 rounded overflow-hidden border-2 border-slate-600">
-                      <img src={editingGame.cover_url} alt="Current cover" className="w-full h-full object-cover" />
+                      <LazyImage src={editingGame.cover_url} alt="Current cover" className="w-full h-full object-cover" />
                     </div>
                   </div>
                 )}
@@ -3112,7 +3284,7 @@ const uniqueConsoles = [...new Set(games.map(g => g.console))].sort();
                         className="w-full p-3 hover:bg-slate-600 transition-colors text-left flex items-center gap-3 border-b border-slate-600 last:border-0"
                       >
                         {anime.coverImage?.large ? (
-                          <img src={anime.coverImage.large} alt={anime.title.romaji} className="w-10 h-14 sm:w-12 sm:h-16 object-cover rounded" />
+                          <LazyImage src={anime.coverImage.large} alt={anime.title.romaji} className="w-10 h-14 sm:w-12 sm:h-16 object-cover rounded" />
                         ) : (
                           <div className="w-10 h-14 sm:w-12 sm:h-16 bg-slate-800 rounded flex items-center justify-center">
                             <Star className="w-5 h-5 sm:w-6 sm:h-6 text-pink-600" />
@@ -3200,7 +3372,7 @@ const uniqueConsoles = [...new Set(games.map(g => g.console))].sort();
                         className="w-full p-3 hover:bg-slate-600 transition-colors text-left flex items-center gap-3 border-b border-slate-600 last:border-0"
                       >
                         {manga.coverImage?.large ? (
-                          <img src={manga.coverImage.large} alt={manga.title.romaji} className="w-10 h-14 sm:w-12 sm:h-16 object-cover rounded" />
+                          <LazyImage src={manga.coverImage.large} alt={manga.title.romaji} className="w-10 h-14 sm:w-12 sm:h-16 object-cover rounded" />
                         ) : (
                           <div className="w-10 h-14 sm:w-12 sm:h-16 bg-slate-800 rounded flex items-center justify-center">
                             <TrendingUp className="w-5 h-5 sm:w-6 sm:h-6 text-blue-600" />
@@ -3238,7 +3410,7 @@ const uniqueConsoles = [...new Set(games.map(g => g.console))].sort();
               
               {showAnimeDetails.banner_url && (
                 <div className="h-48 overflow-hidden">
-                  <img src={showAnimeDetails.banner_url} alt="" className="w-full h-full object-cover opacity-50" />
+                  <LazyImage src={showAnimeDetails.banner_url} alt="" className="w-full h-full object-cover opacity-50" />
                 </div>
               )}
               
@@ -3252,7 +3424,7 @@ const uniqueConsoles = [...new Set(games.map(g => g.console))].sort();
 
                 <div className="flex gap-6 mb-6">
                   <div className="flex-shrink-0">
-                    <img 
+                    <LazyImage 
                       src={showAnimeDetails.cover_url} 
                       alt={showAnimeDetails.title}
                       className="w-48 h-64 object-cover rounded-sm border-4 border-pink-600"
