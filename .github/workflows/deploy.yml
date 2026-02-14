@@ -28,7 +28,9 @@ jobs:
           VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
           VITE_SUPABASE_TGDB: ${{ secrets.VITE_SUPABASE_TGDB }}
           VITE_SUPABASE_BARCODE: ${{ secrets.VITE_SUPABASE_BARCODE }}
-
+          VITE_ANILIST_CLIENT_ID: ${{ secrets.VITE_ANILIST_CLIENT_ID }}
+          VITE_ANILIST_CLIENT_SECRET: ${{ secrets.VITE_ANILIST_CLIENT_SECRET }}
+          VITE_ANILIST_REDIRECT_URI: ${{ secrets.VITE_ANILIST_REDIRECT_URI }}
 
       - run: cp dist/index.html dist/404.html
 
