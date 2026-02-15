@@ -8,6 +8,7 @@ import localforage from 'localforage';
 
 const SERVER_API = import.meta.env.VITE_SUPABASE_BARCODE
 const THEGAMESDB_BASE_URL = import.meta.env.VITE_SUPABASE_TGDB
+const ANILIST_BASE_URL = import.meta.env.VITE_SUPABASE_ANILIST
 
 // Unique ID generator
 let uniqueIdCounter = 0;
@@ -745,24 +746,22 @@ const handleAniListCallback = async (code) => {
   console.log('🔐 Handling AniList callback with code:', code);
   
   try {
-    // Exchange code for token
-    const response = await fetch('https://anilist.co/api/v2/oauth/token', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json'
-      },
-      body: JSON.stringify({
-        grant_type: 'authorization_code',
-        client_id: import.meta.env.VITE_ANILIST_CLIENT_ID,
-        client_secret: import.meta.env.VITE_ANILIST_CLIENT_SECRET,
-        redirect_uri: import.meta.env.VITE_ANILIST_REDIRECT_URI,
-        code: code
-      })
-    });
+    // Use Supabase Edge Function as proxy
+    const response = await fetch(
+      ANILIST_BASE_URL,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`
+        },
+        body: JSON.stringify({ code })
+      }
+    );
 
     if (!response.ok) {
-      throw new Error(`OAuth token exchange failed: ${response.status}`);
+      const error = await response.json();
+      throw new Error(error.error || `HTTP ${response.status}`);
     }
 
     const data = await response.json();
