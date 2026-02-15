@@ -985,7 +985,7 @@ const updateAnimeOnAniList = async (animeItem) => {
   }
 
   const mutation = `
-    mutation ($id: Int, $status: MediaListStatus, $score: Float, $progress: Int) {
+    mutation ($id: Int, $status: MediaListStatus, $score: Int, $progress: Int) {
       SaveMediaListEntry(id: $id, status: $status, scoreRaw: $score, progress: $progress) {
         id
         status
@@ -2857,17 +2857,15 @@ const addGame = () => {
                 </button>
               </div>
             ) : (
-                <div className="h-[calc(100vh-300px)]">
-                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 sm:gap-4">
-                    {filteredAnime.map(item => (
-                      <AnimeCard
-                        key={item.id}
-                        item={item}
-                        onClick={() => setShowAnimeDetails(item)}
-                      />
-                    ))}
-                  </div>
-                </div>
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 sm:gap-4 auto-rows-fr items-stretch">
+                {filteredAnime.map(item => (
+                  <AnimeCard
+                    key={item.id}
+                    item={item}
+                    onClick={() => setShowAnimeDetails(item)}
+                  />
+                ))}
+              </div>
             )}
           </>
         )}
@@ -2903,7 +2901,7 @@ const addGame = () => {
               </div>
             ) : (
               <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 sm:gap-4">
-                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 sm:gap-4">
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 sm:gap-4 auto-rows-fr items-stretch">
                   {filteredManga.map(item => (
                     <MangaCard
                       key={item.id}
