@@ -1477,7 +1477,7 @@ const updateMangaOnAniList = async (mangaItem) => {
       console.log('🔄 [AniList Manga Sync] Updating:', mangaItem.anilist_entry_id);
       
       const mutation = `
-        mutation ($id: Int, $status: MediaListStatus, $score: Float, $progress: Int) {
+        mutation ($id: Int, $status: MediaListStatus, $score: Int, $progress: Int) {
           SaveMediaListEntry(id: $id, status: $status, scoreRaw: $score, progress: $progress) {
             id
             status
@@ -1518,7 +1518,7 @@ const updateMangaOnAniList = async (mangaItem) => {
       console.log('➕ [AniList Manga Sync] Creating:', mangaItem.title);
       
       const mutation = `
-        mutation ($mediaId: Int, $status: MediaListStatus, $score: Float, $progress: Int) {
+        mutation ($mediaId: Int, $status: MediaListStatus, $score: Int, $progress: Int) {
           SaveMediaListEntry(mediaId: $mediaId, status: $status, scoreRaw: $score, progress: $progress) {
             id
             status
