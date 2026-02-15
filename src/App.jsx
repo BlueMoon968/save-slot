@@ -1397,6 +1397,9 @@ const addAnimeFromSearch = async (animeData) => {
   setAnimeSearchResults([]);
 };
 
+// ========== MANGA FUNCTIONS ==========
+
+// Add manga from search
 const addMangaFromSearch = async (mangaData) => {
   const author = mangaData.staff?.edges?.find(edge => edge.role === 'Story')?.node?.name?.full || '';
   
@@ -1410,6 +1413,7 @@ const addMangaFromSearch = async (mangaData) => {
     chapters: mangaData.chapters,
     status: 'plan_to_read',
     score: 0,
+    progress: 0,
     cover_url: mangaData.coverImage.large,
     banner_url: mangaData.bannerImage,
     genres: mangaData.genres,
@@ -1417,6 +1421,7 @@ const addMangaFromSearch = async (mangaData) => {
     author: author,
     type: mangaData.format,
     anilist_id: mangaData.id,
+    anilist_entry_id: null,
     added_date: new Date().toISOString()
   };
   
@@ -1425,8 +1430,18 @@ const addMangaFromSearch = async (mangaData) => {
   // Save to Supabase
   try {
     await supabase.from('manga').insert([newManga]);
+    console.log('💾 [Add Manga] Saved to database');
+    
+    // Sync to AniList if connected
+    if (isAnilistConnected && anilistToken) {
+      console.log('🔄 [Add Manga] Syncing to AniList...');
+      const success = await updateMangaOnAniList(newManga);
+      if (success) {
+        console.log('✅ [Add Manga] Created on AniList');
+      }
+    }
   } catch (error) {
-    console.error('Error saving manga:', error);
+    console.error('❌ [Add Manga] Error:', error);
   }
   
   setShowAddMangaModal(false);
@@ -1434,10 +1449,144 @@ const addMangaFromSearch = async (mangaData) => {
   setMangaSearchResults([]);
 };
 
+// Update manga on AniList (CREATE or UPDATE)
+const updateMangaOnAniList = async (mangaItem) => {
+  if (!anilistToken) {
+    console.warn('⚠️ [AniList Manga Sync] Cannot update: missing token');
+    return false;
+  }
+
+  const statusMap = {
+    'reading': 'CURRENT',
+    'completed': 'COMPLETED',
+    'plan_to_read': 'PLANNING',
+    'dropped': 'DROPPED',
+    'on_hold': 'PAUSED'
+  };
+
+  const anilistStatus = statusMap[mangaItem.status];
+  
+  if (!anilistStatus) {
+    console.error('❌ [AniList Manga Sync] Invalid status:', mangaItem.status);
+    return false;
+  }
+
+  try {
+    // Case 1: UPDATE existing entry
+    if (mangaItem.anilist_entry_id) {
+      console.log('🔄 [AniList Manga Sync] Updating:', mangaItem.anilist_entry_id);
+      
+      const mutation = `
+        mutation ($id: Int, $status: MediaListStatus, $score: Float, $progress: Int) {
+          SaveMediaListEntry(id: $id, status: $status, scoreRaw: $score, progress: $progress) {
+            id
+            status
+            score
+            progress
+          }
+        }
+      `;
+
+      const variables = {
+        id: mangaItem.anilist_entry_id,
+        status: anilistStatus,
+        score: mangaItem.score ? mangaItem.score * 10 : 0,
+        progress: mangaItem.progress || 0
+      };
+
+      const response = await fetch('https://graphql.anilist.co', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${anilistToken}`
+        },
+        body: JSON.stringify({ query: mutation, variables })
+      });
+
+      const data = await response.json();
+
+      if (data.errors) {
+        console.error('❌ [AniList Manga Sync] Update error:', data.errors);
+        return false;
+      }
+
+      console.log('✅ [AniList Manga Sync] Updated:', mangaItem.title);
+      return true;
+    } 
+    // Case 2: CREATE new entry
+    else if (mangaItem.anilist_id) {
+      console.log('➕ [AniList Manga Sync] Creating:', mangaItem.title);
+      
+      const mutation = `
+        mutation ($mediaId: Int, $status: MediaListStatus, $score: Float, $progress: Int) {
+          SaveMediaListEntry(mediaId: $mediaId, status: $status, scoreRaw: $score, progress: $progress) {
+            id
+            status
+            score
+            progress
+          }
+        }
+      `;
+
+      const variables = {
+        mediaId: mangaItem.anilist_id,
+        status: anilistStatus,
+        score: mangaItem.score ? mangaItem.score * 10 : 0,
+        progress: mangaItem.progress || 0
+      };
+
+      const response = await fetch('https://graphql.anilist.co', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${anilistToken}`
+        },
+        body: JSON.stringify({ query: mutation, variables })
+      });
+
+      const data = await response.json();
+
+      if (data.errors) {
+        console.error('❌ [AniList Manga Sync] Create error:', data.errors);
+        return false;
+      }
+
+      const newEntryId = data.data.SaveMediaListEntry.id;
+      console.log('✅ [AniList Manga Sync] Created:', newEntryId);
+      
+      // Save entry_id
+      setManga(prevManga => 
+        prevManga.map(m => 
+          m.id === mangaItem.id 
+            ? { ...m, anilist_entry_id: newEntryId }
+            : m
+        )
+      );
+      
+      await supabase
+        .from('manga')
+        .update({ anilist_entry_id: newEntryId })
+        .eq('id', mangaItem.id);
+      
+      return true;
+    } else {
+      console.warn('⚠️ [AniList Manga Sync] No anilist_id');
+      return false;
+    }
+
+  } catch (error) {
+    console.error('❌ [AniList Manga Sync] Error:', error);
+    return false;
+  }
+};
+
+// Delete manga from AniList
 const deleteMangaFromAniList = async (mangaItem) => {
   if (!anilistToken || !mangaItem.anilist_entry_id) return true;
 
   try {
+    console.log('🗑️ [AniList Manga Delete] Deleting:', mangaItem.anilist_entry_id);
+    
     const mutation = `
       mutation ($id: Int) {
         DeleteMediaListEntry(id: $id) {
@@ -1459,13 +1608,20 @@ const deleteMangaFromAniList = async (mangaItem) => {
     });
 
     const data = await response.json();
+
+    if (data.errors) {
+      console.error('❌ [AniList Manga Delete] Error:', data.errors);
+      return false;
+    }
+
+    console.log('✅ [AniList Manga Delete] Deleted');
     return data.data?.DeleteMediaListEntry?.deleted || false;
+    
   } catch (error) {
-    console.error('❌ Delete manga error:', error);
+    console.error('❌ [AniList Manga Delete] Fatal error:', error);
     return false;
   }
 };
-
   const saveAchievementsOnServer = async (updatedNotified,uid) => {
 
     try {
@@ -3089,7 +3245,7 @@ const addGame = () => {
             <div className="mb-4 sm:mb-6 bg-slate-800 p-3 sm:p-4 rounded-sm border-4 border-blue-700">
               <div className="flex flex-col sm:flex-row justify-between items-center gap-3">
                 <div className="text-slate-400 font-mono text-sm">
-                  {manga.length} manga
+                  {filteredManga.length} manga
                 </div>
                 <button
                   onClick={() => setShowAddMangaModal(true)}
@@ -3101,7 +3257,7 @@ const addGame = () => {
               </div>
             </div>
 
-            {manga.length === 0 ? (
+            {filteredManga.length === 0 ? (
               <div className="text-center py-12 sm:py-16 bg-slate-800 rounded-sm border-4 border-blue-700">
                 <TrendingUp className="w-12 h-12 sm:w-16 sm:h-16 text-blue-600 mx-auto mb-4" />
                 <p className="text-slate-400 font-mono text-sm sm:text-base mb-4">NO MANGA YET</p>
@@ -3113,16 +3269,14 @@ const addGame = () => {
                 </button>
               </div>
             ) : (
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 sm:gap-4">
-                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 sm:gap-4 auto-rows-fr items-stretch">
-                  {filteredManga.map(item => (
-                    <MangaCard
-                      key={item.id}
-                      item={item}
-                      onClick={() => setShowMangaDetails(item)}
-                    />
-                  ))}
-                </div>
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 sm:gap-4 auto-rows-fr items-stretch">
+                {filteredManga.map(item => (
+                  <MangaCard
+                    key={item.id}
+                    item={item}
+                    onClick={() => setShowMangaDetails(item)}
+                  />
+                ))}
               </div>
             )}
           </>
@@ -4217,6 +4371,205 @@ const addGame = () => {
                       target="_blank"
                       rel="noopener noreferrer"
                       className="flex-1 px-6 py-3 bg-pink-600 text-white rounded-sm hover:bg-pink-700 transition-all font-bold border-4 border-pink-500 font-mono text-center"
+                    >
+                      View on AniList
+                    </a>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Manga Details Modal */}
+        {showMangaDetails && (
+          <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center p-4 z-50 overflow-y-auto">
+            <div className="bg-slate-800 rounded-sm max-w-3xl w-full border-4 border-blue-600 shadow-2xl relative max-h-[90vh] overflow-y-auto">
+              <div className="absolute top-0 left-0 right-0 h-3 sm:h-4 bg-slate-900 rounded-t-sm"></div>
+              
+              {showMangaDetails.banner_url && (
+                <div className="h-48 overflow-hidden">
+                  <img src={showMangaDetails.banner_url} alt="" className="w-full h-full object-cover opacity-50" />
+                </div>
+              )}
+              
+              <div className="p-6 pt-8">
+                <button
+                  onClick={() => setShowMangaDetails(null)}
+                  className="absolute top-4 right-4 p-2 hover:bg-slate-700 rounded transition-colors z-10"
+                >
+                  <X className="w-6 h-6" />
+                </button>
+
+                <div className="flex gap-6 mb-6">
+                  <div className="flex-shrink-0">
+                    <img 
+                      src={showMangaDetails.cover_url} 
+                      alt={showMangaDetails.title}
+                      className="w-48 h-64 object-cover rounded-sm border-4 border-blue-600"
+                    />
+                  </div>
+
+                  <div className="flex-1">
+                    <h2 className="text-2xl font-black text-white font-mono mb-2">
+                      {showMangaDetails.title}
+                    </h2>
+                    
+                    {/* Sync Status Badge */}
+                    <div className="flex gap-2 mb-4">
+                      {showMangaDetails.anilist_entry_id ? (
+                        <span className="px-3 py-1 bg-green-600 text-white rounded-full text-xs font-mono font-bold">
+                          ✓ Synced to AniList
+                        </span>
+                      ) : showMangaDetails.anilist_id ? (
+                        <span className="px-3 py-1 bg-amber-600 text-white rounded-full text-xs font-mono font-bold">
+                          ⏳ Will sync on update
+                        </span>
+                      ) : (
+                        <span className="px-3 py-1 bg-slate-600 text-white rounded-full text-xs font-mono font-bold">
+                          ✗ Not on AniList
+                        </span>
+                      )}
+                    </div>
+                    
+                    {showMangaDetails.title_english && showMangaDetails.title_english !== showMangaDetails.title && (
+                      <p className="text-slate-400 font-mono mb-4">{showMangaDetails.title_english}</p>
+                    )}
+
+                    <div className="grid grid-cols-2 gap-3 mb-4">
+                      <div className="bg-slate-700 p-3 rounded-sm">
+                        <p className="text-slate-400 text-xs font-mono">TYPE</p>
+                        <p className="text-white font-bold font-mono">{showMangaDetails.type || 'MANGA'}</p>
+                      </div>
+                      <div className="bg-slate-700 p-3 rounded-sm">
+                        <p className="text-slate-400 text-xs font-mono">VOLUMES</p>
+                        <p className="text-white font-bold font-mono">{showMangaDetails.volumes || '?'}</p>
+                      </div>
+                      <div className="bg-slate-700 p-3 rounded-sm">
+                        <p className="text-slate-400 text-xs font-mono">CHAPTERS</p>
+                        <p className="text-white font-bold font-mono">{showMangaDetails.chapters || '?'}</p>
+                      </div>
+                      <div className="bg-slate-700 p-3 rounded-sm">
+                        <p className="text-slate-400 text-xs font-mono">YEAR</p>
+                        <p className="text-white font-bold font-mono">{showMangaDetails.year || '?'}</p>
+                      </div>
+                    </div>
+
+                    {showMangaDetails.author && (
+                      <div className="bg-slate-700 p-3 rounded-sm mb-4">
+                        <p className="text-slate-400 text-xs font-mono">AUTHOR</p>
+                        <p className="text-white font-bold font-mono">{showMangaDetails.author}</p>
+                      </div>
+                    )}
+
+                    <div className="flex gap-3 mb-4">
+                      <select
+                        value={showMangaDetails.status}
+                        onChange={async (e) => {
+                          const newStatus = e.target.value;
+                          const updated = { ...showMangaDetails, status: newStatus };
+                          
+                          console.log('📝 [MangaModal] Changing status to:', newStatus);
+                          
+                          setManga(manga.map(m => m.id === updated.id ? updated : m));
+                          setShowMangaDetails(updated);
+                          
+                          await supabase
+                            .from('manga')
+                            .update({ status: newStatus })
+                            .eq('id', updated.id);
+                          
+                          if (isAnilistConnected && anilistToken) {
+                            console.log('🔄 [MangaModal] Syncing to AniList...');
+                            const success = await updateMangaOnAniList(updated);
+                            if (success) {
+                              console.log('✅ [MangaModal] Synced to AniList');
+                            }
+                          }
+                        }}
+                        className="flex-1 px-4 py-2 bg-slate-700 text-white rounded-sm border-2 border-blue-600 focus:outline-none font-mono text-sm"
+                      >
+                        <option value="reading">Reading</option>
+                        <option value="completed">Completed</option>
+                        <option value="plan_to_read">Plan to Read</option>
+                        <option value="dropped">Dropped</option>
+                        <option value="on_hold">On Hold</option>
+                      </select>
+
+                      <select
+                        value={showMangaDetails.score}
+                        onChange={async (e) => {
+                          const newScore = parseInt(e.target.value);
+                          const updated = { ...showMangaDetails, score: newScore };
+                          
+                          setManga(manga.map(m => m.id === updated.id ? updated : m));
+                          setShowMangaDetails(updated);
+                          
+                          await supabase
+                            .from('manga')
+                            .update({ score: newScore })
+                            .eq('id', updated.id);
+                          
+                          if (isAnilistConnected && anilistToken) {
+                            await updateMangaOnAniList(updated);
+                          }
+                        }}
+                        className="w-24 px-4 py-2 bg-amber-600 text-white rounded-sm border-2 border-amber-500 focus:outline-none font-mono text-sm font-bold"
+                      >
+                        <option value="0">⭐ 0</option>
+                        {[1,2,3,4,5,6,7,8,9,10].map(n => (
+                          <option key={n} value={n}>⭐ {n}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {showMangaDetails.genres && showMangaDetails.genres.length > 0 && (
+                      <div className="flex flex-wrap gap-2 mb-4">
+                        {showMangaDetails.genres.map(genre => (
+                          <span key={genre} className="px-3 py-1 bg-blue-600 text-white rounded-full text-xs font-mono">
+                            {genre}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex gap-3">
+                  <button
+                    onClick={async () => {
+                      const confirmMessage = showMangaDetails.anilist_entry_id
+                        ? `Eliminare "${showMangaDetails.title}"?\n\n⚠️ Verrà rimosso anche da AniList!`
+                        : `Eliminare "${showMangaDetails.title}"?`;
+                      
+                      if (window.confirm(confirmMessage)) {
+                        console.log('🗑️ [Delete Manga] Starting deletion');
+                        
+                        setManga(manga.filter(m => m.id !== showMangaDetails.id));
+                        await supabase.from('manga').delete().eq('id', showMangaDetails.id);
+                        
+                        if (isAnilistConnected && anilistToken && showMangaDetails.anilist_entry_id) {
+                          console.log('🔄 [Delete Manga] Deleting from AniList...');
+                          const success = await deleteMangaFromAniList(showMangaDetails);
+                          if (success) {
+                            console.log('✅ [Delete Manga] Deleted from AniList');
+                          }
+                        }
+                        
+                        setShowMangaDetails(null);
+                      }
+                    }}
+                    className="flex-1 px-6 py-3 bg-red-600 text-white rounded-sm hover:bg-red-700 transition-all font-bold border-4 border-red-500 font-mono"
+                  >
+                    <Trash2 className="w-4 h-4 inline mr-2" />
+                    Delete
+                  </button>
+                  {showMangaDetails.anilist_id && (
+                    <a
+                      href={`https://anilist.co/manga/${showMangaDetails.anilist_id}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex-1 px-6 py-3 bg-blue-600 text-white rounded-sm hover:bg-blue-700 transition-all font-bold border-4 border-blue-500 font-mono text-center"
                     >
                       View on AniList
                     </a>
