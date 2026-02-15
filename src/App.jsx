@@ -334,7 +334,8 @@ function App() {
   const [anilistToken, setAnilistToken] = useState(null);
   const [anilistUserId, setAnilistUserId] = useState(null);
   const [isAnilistConnected, setIsAnilistConnected] = useState(false);
-  const [username, setUsername] = useState('');               
+  const [username, setUsername] = useState('');
+  const [isBatchOperation, setIsBatchOperation] = useState(false);           
   const [loginForm, setLoginForm] = useState({ username: '', password: '' }); 
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [newGame, setNewGame] = useState({
@@ -2018,19 +2019,25 @@ const saveToSupabase = useCallback(async (gamesData, wishlistData) => {
   }, []);
 
   // Save only if actually changed (deep comparison)
-  const lastSaveRef = useRef({ games: [], wishlist: [] });
+    const lastSaveRef = useRef({ games: '[]', wishlist: '[]' });
 
-  useEffect(() => {
-    if (!userId) return;
-    
-    // Check if actually changed
-    const gamesChanged = JSON.stringify(games) !== JSON.stringify(lastSaveRef.current.games);
-    const wishlistChanged = JSON.stringify(wishlist) !== JSON.stringify(lastSaveRef.current.wishlist);
-    
-    if (!gamesChanged && !wishlistChanged) {
-      console.log('⏭️ No changes detected, skipping save');
-      return;
-    }
+    useEffect(() => {
+      if (!userId) return;
+      
+      // CRITICAL: Don't auto-save during batch operations
+      if (isBatchOperation) {
+        console.log('⏸️ [Auto-Save] Paused during batch operation');
+        return;
+      }
+      
+      // Quick check if data changed (using JSON comparison)
+      const gamesStr = JSON.stringify(games);
+      const wishlistStr = JSON.stringify(wishlist);
+      
+      if (gamesStr === lastSaveRef.current.games && 
+          wishlistStr === lastSaveRef.current.wishlist) {
+        return; // No changes, skip save
+      }
     
     const timeoutId = setTimeout(() => {
       console.log('💾 Saving changes to Supabase...');
