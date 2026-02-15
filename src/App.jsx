@@ -348,53 +348,62 @@ function App() {
   });
 
   // Initialize user session
-  useEffect(() => {
-    const initAuth = async () => {
-      try {
-        const savedAuth = await localforage.getItem('saveslot-auth');
+useEffect(() => {
+  const initAuth = async () => {
+    try {
+      console.log('🔍 [INIT] Checking for saved auth...');
+      
+      const savedAuth = await localforage.getItem('saveslot-auth');
+      
+      if (savedAuth && savedAuth.userId && savedAuth.username) {
+        const { userId: uid, username: uname } = savedAuth;
         
-        if (savedAuth && savedAuth.userId && savedAuth.username) {
-          const { userId: uid, username: uname } = savedAuth;
-          
-          console.log('🔐 Checking saved auth:', uid);
-          
-          // Verify user exists in database
-          const { data: user, error } = await supabase
-            .from('users')
-            .select('id, username')
-            .eq('id', uid)
-            .single();
-          
-          if (error) {
-            console.error('❌ Auth verification failed:', error);
-            await localforage.removeItem('saveslot-auth');
-            setShowLoginModal(true);
-            return;
-          }
-          
-          if (user) {
-            console.log('✅ Auth verified:', user.username);
-            setUserId(uid);
-            setUsername(uname);
-            setShowLoginModal(false);
-            await loadFromSupabase(uid);
-          } else {
-            console.warn('⚠️ User not found in database');
-            await localforage.removeItem('saveslot-auth');
-            setShowLoginModal(true);
-          }
-        } else {
-          console.log('ℹ️ No saved auth found');
+        console.log('✅ [INIT] Found auth:', uname);
+        
+        // IMPORTANTE: Setta state IMMEDIATAMENTE
+        setUserId(uid);
+        setUsername(uname);
+        setShowLoginModal(false);
+        console.log('📝 [INIT] State set');
+        
+        // Verifica user (in background)
+        console.log('🔍 [INIT] Verifying user...');
+        const { data: user, error } = await supabase
+          .from('users')
+          .select('id, username')
+          .eq('id', uid)
+          .single();
+        
+        if (error || !user) {
+          console.warn('⚠️ [INIT] User not found, logging out');
+          await localforage.removeItem('saveslot-auth');
+          setUserId(null);
+          setUsername(null);
           setShowLoginModal(true);
+          return;
         }
-      } catch (error) {
-        console.error('❌ Auth init error:', error);
+        
+        console.log('✅ [INIT] User verified');
+        
+        // Carica dati (non blocca)
+        console.log('📥 [INIT] Loading data...');
+        loadFromSupabase(uid).catch(err => {
+          console.error('⚠️ [INIT] Load error:', err);
+        });
+        
+      } else {
+        console.log('ℹ️ [INIT] No saved auth');
         setShowLoginModal(true);
       }
-    };
-    
-    initAuth();
-  }, []);
+    } catch (error) {
+      console.error('❌ [INIT] Fatal error:', error);
+      setShowLoginModal(true);
+    }
+  };
+  
+  initAuth();
+}, []);
+
 
   // Calculate collection value - Simple estimation based on console/year
   const calculateCollectionValue = async () => {
@@ -1418,43 +1427,57 @@ const checkAchievements = useCallback(() => {
 
 
 const handleLogin = async () => {
-  if (!loginUsername || !loginPassword) {
+  if (!loginForm.username || !loginForm.password) {
     alert('Inserisci username e password');
     return;
   }
 
   try {
+    console.log('🔐 [LOGIN] Attempting login as:', loginForm.username);
+    
     const { data: user, error } = await supabase
       .from('users')
       .select('*')
-      .eq('username', loginUsername)
-      .eq('password', loginPassword)
+      .eq('username', loginForm.username)
+      .eq('password', loginForm.password)
       .single();
 
     if (error || !user) {
+      console.error('❌ [LOGIN] Error:', error);
       alert('Username o password errati');
       return;
     }
 
-    console.log('✅ Login successful:', user.username);
+    console.log('✅ [LOGIN] User found:', user.username);
     
+    // STEP 1: Salva in localforage PRIMA DI TUTTO
+    const authData = {
+      userId: user.id,
+      username: user.username
+    };
+    
+    await localforage.setItem('saveslot-auth', authData);
+    console.log('💾 [LOGIN] Auth saved:', authData);
+    
+    // STEP 2: Aggiorna lo state
     setUserId(user.id);
     setUsername(user.username);
     setShowLoginModal(false);
+    console.log('📝 [LOGIN] State updated');
     
-    // Save to localforage
-    await localforage.setItem('saveslot-auth', {
-      userId: user.id,
-      username: user.username
+    // STEP 3: Carica dati (non blocca il login se fallisce)
+    console.log('📥 [LOGIN] Loading data...');
+    loadFromSupabase(user.id).catch(err => {
+      console.error('⚠️ [LOGIN] Load error (non-critical):', err);
     });
     
-    console.log('💾 Auth saved to localforage');
+    // STEP 4: Pulisci form
+    setLoginForm({ username: '', password: '' });
     
-    await loadFromSupabase(user.id);
-    } catch (error) {
-      console.error('Login error:', error);
-      alert('Errore durante il login. Riprova.');
-    } finally {
+  } catch (error) {
+    console.error('❌ [LOGIN] Fatal error:', error);
+    alert('Errore durante il login. Riprova.');
+  } finally {
       setIsLoggingIn(false);
     }
   };
@@ -1638,16 +1661,21 @@ const saveToSupabase = useCallback(async (gamesData, wishlistData) => {
     }
   }, [games.length, wishlist.length, checkAchievements]);
 
-// Handle AniList OAuth callback
-useEffect(() => {
-  const urlParams = new URLSearchParams(window.location.search);
-  const code = urlParams.get('code');
-  
-  if (code && !anilistToken) {
-    console.log('🔐 OAuth code detected, exchanging for token...');
-    handleAniListCallback(code);
-  }
-}, []);
+  // Handle AniList OAuth callback
+  useEffect(() => {
+    const urlParams = new URLSearchParams(window.location.search);
+    const code = urlParams.get('code');
+    
+    // Only process if there's actually an OAuth code
+    if (code && code.length > 10 && !anilistToken) {
+      console.log('🔐 AniList OAuth code detected, exchanging for token...');
+      handleAniListCallback(code);
+    } else if (window.location.search && !code) {
+      // Clean URL if there's a ? but no code
+      console.log('🧹 Cleaning URL...');
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+  }, []);
 
 // Load AniList credentials on mount
 useEffect(() => {
@@ -2261,41 +2289,42 @@ const addGame = () => {
               <p className="text-slate-400 text-sm font-mono">v2.0 • User Authentication</p>
             </div>
 
-            <form onSubmit={handleLogin} className="space-y-4">
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  console.log('🔐 [FORM] Submit triggered');
+                  handleLogin();
+                }}
+                className="space-y-4"
+              >
               <div>
-                <label className="block text-amber-400 text-sm font-semibold mb-2 font-mono">
-                  Username
-                </label>
+                <label className="block text-amber-400 text-sm font-semibold mb-2 font-mono">Username</label>
                 <input
                   type="text"
                   value={loginForm.username}
                   onChange={(e) => setLoginForm({ ...loginForm, username: e.target.value })}
-                  className="w-full px-4 py-3 bg-slate-700 text-white rounded-sm border-2 border-slate-600 focus:outline-none focus:border-amber-500 font-mono"
                   placeholder="Enter username"
-                  required
+                  className="w-full px-4 py-2 bg-slate-700 text-white rounded-sm border-2 border-slate-600 focus:outline-none focus:border-amber-500 font-mono"
                 />
               </div>
 
               <div>
-                <label className="block text-amber-400 text-sm font-semibold mb-2 font-mono">
-                  Password
-                </label>
+                <label className="block text-amber-400 text-sm font-semibold mb-2 font-mono">Password</label>
                 <input
                   type="password"
                   value={loginForm.password}
                   onChange={(e) => setLoginForm({ ...loginForm, password: e.target.value })}
-                  className="w-full px-4 py-3 bg-slate-700 text-white rounded-sm border-2 border-slate-600 focus:outline-none focus:border-amber-500 font-mono"
-                  placeholder="••••••••"
-                  required
+                  placeholder="Enter password"
+                  className="w-full px-4 py-2 bg-slate-700 text-white rounded-sm border-2 border-slate-600 focus:outline-none focus:border-amber-500 font-mono"
                 />
               </div>
 
               <button
                 type="submit"
-                disabled={isLoggingIn}
-                className="w-full px-6 py-3 bg-amber-600 text-white rounded-sm hover:bg-amber-700 transition-all font-bold border-4 border-amber-500 font-mono disabled:opacity-50 disabled:cursor-not-allowed"
+                className="w-full px-6 py-3 bg-amber-600 text-white rounded-sm hover:bg-amber-700 transition-all font-bold border-4 border-amber-500 font-mono text-lg flex items-center justify-center gap-2"
               >
-                {isLoggingIn ? '⏳ LOGGING IN...' : '🔓 LOGIN'}
+                <User className="w-5 h-5" />
+                LOGIN
               </button>
             </form>
 
