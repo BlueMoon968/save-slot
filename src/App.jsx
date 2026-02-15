@@ -487,48 +487,46 @@ const updateAllCovers = async () => {
     `Giochi SENZA copertina: ${gamesWithoutCovers.length}\n` +
     `Giochi CON copertina: ${gamesWithCovers.length}\n` +
     `Totale: ${games.length}\n\n` +
-    `Tempo stimato: ~${Math.ceil(gamesWithoutCovers.length * 2 / 60)} minuti\n` +
-    `(2 secondi per gioco, limiti API)\n\n` +
-    `⚠️ Verranno aggiornate SOLO le copertine mancanti.\n` +
-    `I giochi con copertina esistente non verranno toccati.\n\n` +
+    `Tempo stimato: ~${Math.ceil(gamesWithoutCovers.length * 2 / 60)} minuti\n\n` +
+    `⚠️ AUTO-SAVE VERRÀ DISABILITATO durante l'operazione.\n` +
+    `Il salvataggio avverrà solo alla fine.\n\n` +
     `Continuare?`
   )) {
     return;
   }
 
+  // CRITICAL: Disable auto-save during batch operation
+  setIsBatchOperation(true);
   setIsLoadingPrices(true);
+  
   let updated = 0;
   let skippedHasCover = 0;
   let skippedNoConsole = 0;
   let skippedNotFound = 0;
   let errors = 0;
-  let batch = [];
 
   try {
-    console.log(`🖼️ [UPDATE COVERS] Starting update for ${gamesWithoutCovers.length} games`);
+    console.log(`🖼️ [UPDATE COVERS] Starting (auto-save DISABLED)`);
     
+    // Work on a copy
     const updatedGames = [...games];
 
     for (let i = 0; i < updatedGames.length; i++) {
       const game = updatedGames[i];
       
-      // SKIP 1: Already has cover
+      // SKIP: Already has cover
       if (game.cover_url) {
         skippedHasCover++;
-        console.log(`⏭️ [${i + 1}/${games.length}] ${game.title} - Already has cover`);
         continue;
       }
 
       try {
-        // SKIP 2: No console info
         const consoleObj = CONSOLES.find(c => c.name === game.console);
         if (!consoleObj) {
           skippedNoConsole++;
-          console.log(`⏭️ [${i + 1}/${games.length}] ${game.title} - Console not found`);
           continue;
         }
 
-        // Search on TheGamesDB
         const params = new URLSearchParams({
           name: game.title,
           include: 'boxart',
@@ -537,13 +535,12 @@ const updateAllCovers = async () => {
 
         const apiUrl = `${THEGAMESDB_BASE_URL}/Games/ByGameName?${params.toString()}`;
         
-        console.log(`🔍 [${i + 1}/${games.length}] Searching: ${game.title} (${game.console})`);
+        console.log(`🔍 [${updated + 1}] ${game.title}`);
         
         const res = await fetch(apiUrl, { headers: { Accept: 'application/json' } });
         
         if (!res.ok) {
           errors++;
-          console.error(`❌ [${i + 1}/${games.length}] API Error ${res.status} for ${game.title}`);
           await new Promise(resolve => setTimeout(resolve, 2000));
           continue;
         }
@@ -566,41 +563,36 @@ const updateAllCovers = async () => {
 
           if (cover_url) {
             updatedGames[i].cover_url = cover_url;
-            batch.push({ id: game.id, cover_url });
             updated++;
-            
-            console.log(`✅ [${i + 1}/${games.length}] ${game.title} - Cover found!`);
-            
-            // Save batch every 10 updates
-            if (batch.length >= 10) {
-              await saveBatchCovers(batch);
-              batch = [];
-            }
+            console.log(`✅ [${updated}] ${game.title}`);
           } else {
             skippedNotFound++;
-            console.log(`⏭️ [${i + 1}/${games.length}] ${game.title} - No cover image available`);
           }
         } else {
           skippedNotFound++;
-          console.log(`⏭️ [${i + 1}/${games.length}] ${game.title} - Not found in database`);
         }
 
-        // Rate limiting: 2 seconds between requests
+        // Rate limiting
         await new Promise(resolve => setTimeout(resolve, 2000));
 
       } catch (error) {
-        console.error(`❌ [${i + 1}/${games.length}] Error for ${game.title}:`, error);
+        console.error(`❌ Error for ${game.title}:`, error);
         errors++;
       }
     }
 
-    // Save last batch
-    if (batch.length > 0) {
-      await saveBatchCovers(batch);
-    }
-
-    // Update state
+    console.log('💾 [UPDATE COVERS] Saving to database...');
+    
+    // Update state ONCE
     setGames(updatedGames);
+    
+    // Wait a bit for React to update
+    await new Promise(resolve => setTimeout(resolve, 500));
+    
+    // MANUAL SAVE (auto-save is disabled)
+    await saveToSupabase(updatedGames, wishlist);
+    
+    console.log('✅ [UPDATE COVERS] Save completed');
 
     alert(
       `✅ AGGIORNAMENTO COMPLETATO!\n\n` +
@@ -610,35 +602,17 @@ const updateAllCovers = async () => {
       `⏭️ Non trovate: ${skippedNotFound}\n` +
       `⏭️ Console sconosciuta: ${skippedNoConsole}\n` +
       `❌ Errori API: ${errors}\n\n` +
-      `📈 TOTALE PROCESSATI: ${games.length}\n` +
-      `🖼️ Giochi con cover ora: ${games.filter(g => g.cover_url).length}/${games.length}`
+      `🖼️ Giochi con cover: ${updatedGames.filter(g => g.cover_url).length}/${updatedGames.length}`
     );
 
   } catch (error) {
     console.error('❌ [UPDATE COVERS] Fatal error:', error);
-    alert('❌ Errore durante l\'aggiornamento. Progresso salvato.');
+    alert('❌ Errore critico. Ricarica la pagina e verifica i dati.');
   } finally {
+    // CRITICAL: Re-enable auto-save
+    setIsBatchOperation(false);
     setIsLoadingPrices(false);
-  }
-};
-
-// Helper: Salva batch di cover su Supabase
-const saveBatchCovers = async (batch) => {
-  if (!userId || batch.length === 0) return;
-  
-  try {
-    // Aggiorna solo le cover in batch
-    for (const item of batch) {
-      await supabase
-        .from('games')
-        .update({ cover_url: item.cover_url })
-        .eq('id', item.id)
-        .eq('user_id', userId);
-    }
-    
-    console.log(`💾 Saved batch of ${batch.length} covers to Supabase`);
-  } catch (error) {
-    console.error('Error saving batch:', error);
+    console.log('✅ [UPDATE COVERS] Auto-save RE-ENABLED');
   }
 };
 
