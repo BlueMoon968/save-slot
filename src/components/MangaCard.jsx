@@ -4,9 +4,10 @@ import { TrendingUp } from 'lucide-react';
 const MangaCard = React.memo(({ item, onClick }) => (
   <div 
     onClick={onClick}
-    className="bg-slate-800 rounded-sm border-4 border-blue-700 hover:border-blue-600 overflow-hidden transition-all shadow-lg cursor-pointer h-full"
+    className="bg-slate-800 rounded-sm border-4 border-blue-700 hover:border-blue-600 overflow-hidden transition-all shadow-lg cursor-pointer flex flex-col h-full"
   >
-    <div className="aspect-[3/4] bg-slate-900 relative overflow-hidden">
+    {/* Cover Image - Fixed aspect ratio */}
+    <div className="aspect-[2/3] bg-slate-900 relative overflow-hidden flex-shrink-0">
       {item.cover_url ? (
         <img 
           src={item.cover_url} 
@@ -20,19 +21,27 @@ const MangaCard = React.memo(({ item, onClick }) => (
           <TrendingUp className="w-12 h-12 text-blue-700" />
         </div>
       )}
-      <div className="absolute top-2 right-2 bg-blue-600 rounded px-2 py-1 text-xs font-bold font-mono">
-        {item.status?.toUpperCase()}
+      
+      {/* Status Badge */}
+      <div className="absolute top-2 right-2 bg-blue-600 rounded px-2 py-1 text-xs font-bold font-mono shadow-lg">
+        {item.status?.replace('_', ' ').toUpperCase()}
       </div>
+      
+      {/* Score Badge */}
       {item.score > 0 && (
-        <div className="absolute top-2 left-2 bg-amber-500 rounded-full w-8 h-8 flex items-center justify-center font-bold text-sm">
+        <div className="absolute top-2 left-2 bg-amber-500 rounded-full w-8 h-8 flex items-center justify-center font-bold text-sm shadow-lg">
           {item.score}
         </div>
       )}
     </div>
-    <div className="p-2">
-      <h3 className="font-bold text-xs truncate font-mono">{item.title}</h3>
+    
+    {/* Info Section - Fixed height */}
+    <div className="p-2 sm:p-3 flex-grow flex flex-col justify-between">
+      <h3 className="font-bold text-xs sm:text-sm line-clamp-2 font-mono mb-1">
+        {item.title}
+      </h3>
       <p className="text-xs text-slate-400 font-mono">
-        {item.volumes ? `Vol ${item.volumes}` : 'Ongoing'} • {item.type}
+        {item.volumes ? `Vol ${item.volumes}` : 'Ongoing'} • {item.type || 'MANGA'}
       </p>
     </div>
   </div>
