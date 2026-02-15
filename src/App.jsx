@@ -349,34 +349,52 @@ function App() {
 
   // Initialize user session
   useEffect(() => {
-    checkAuth();
-  }, []);
-
-  const checkAuth = async () => {
-    const savedAuth = await localforage.getItem('saveslot-auth');
-    
-    if (savedAuth) {
-      const { userId: uid, username: uname } = savedAuth;
-      
-      // Verify user exists
-      const { data: user } = await supabase
-        .from('users')
-        .select('id, username')
-        .eq('id', uid)
-        .single();
-      
-      if (user) {
-        setUserId(uid);
-        setUsername(uname);
-        setShowLoginModal(false);
-        await loadFromSupabase(uid);
-      } else {
+    const initAuth = async () => {
+      try {
+        const savedAuth = await localforage.getItem('saveslot-auth');
+        
+        if (savedAuth && savedAuth.userId && savedAuth.username) {
+          const { userId: uid, username: uname } = savedAuth;
+          
+          console.log('🔐 Checking saved auth:', uid);
+          
+          // Verify user exists in database
+          const { data: user, error } = await supabase
+            .from('users')
+            .select('id, username')
+            .eq('id', uid)
+            .single();
+          
+          if (error) {
+            console.error('❌ Auth verification failed:', error);
+            await localforage.removeItem('saveslot-auth');
+            setShowLoginModal(true);
+            return;
+          }
+          
+          if (user) {
+            console.log('✅ Auth verified:', user.username);
+            setUserId(uid);
+            setUsername(uname);
+            setShowLoginModal(false);
+            await loadFromSupabase(uid);
+          } else {
+            console.warn('⚠️ User not found in database');
+            await localforage.removeItem('saveslot-auth');
+            setShowLoginModal(true);
+          }
+        } else {
+          console.log('ℹ️ No saved auth found');
+          setShowLoginModal(true);
+        }
+      } catch (error) {
+        console.error('❌ Auth init error:', error);
         setShowLoginModal(true);
       }
-    } else {
-      setShowLoginModal(true);
-    }
-  };
+    };
+    
+    initAuth();
+  }, []);
 
   // Calculate collection value - Simple estimation based on console/year
   const calculateCollectionValue = async () => {
@@ -1399,41 +1417,40 @@ const checkAchievements = useCallback(() => {
   };
 
 
-  const handleLogin = async (e) => {
-    e.preventDefault();
-    setIsLoggingIn(true);
+const handleLogin = async () => {
+  if (!loginUsername || !loginPassword) {
+    alert('Inserisci username e password');
+    return;
+  }
 
-    try {
-      // Check credentials
-      const { data, error } = await supabase
-        .from('users')
-        .select('id, username, password')
-        .eq('username', loginForm.username)
-        .single();
+  try {
+    const { data: user, error } = await supabase
+      .from('users')
+      .select('*')
+      .eq('username', loginUsername)
+      .eq('password', loginPassword)
+      .single();
 
-      if (error || !data) {
-        alert('Username non trovato');
-        setIsLoggingIn(false);
-        return;
-      }
+    if (error || !user) {
+      alert('Username o password errati');
+      return;
+    }
 
-      // Simple password check (in production, use bcrypt or similar)
-      if (data.password !== loginForm.password) {
-        alert('Password errata');
-        setIsLoggingIn(false);
-        return;
-      }
-
-      // Save auth to localStorage
-      await localforage.setItem('saveslot-auth', { userId, username });
-
-      setUserId(data.id);
-      setUsername(data.username);
-      setShowLoginModal(false);
-      setLoginForm({ username: '', password: '' });
-
-      // Load user's data
-      await loadFromSupabase(data.id);
+    console.log('✅ Login successful:', user.username);
+    
+    setUserId(user.id);
+    setUsername(user.username);
+    setShowLoginModal(false);
+    
+    // Save to localforage
+    await localforage.setItem('saveslot-auth', {
+      userId: user.id,
+      username: user.username
+    });
+    
+    console.log('💾 Auth saved to localforage');
+    
+    await loadFromSupabase(user.id);
     } catch (error) {
       console.error('Login error:', error);
       alert('Errore durante il login. Riprova.');
@@ -1442,19 +1459,25 @@ const checkAchievements = useCallback(() => {
     }
   };
 
-  const handleLocalForageRemoveSaveslothAuth = async () => {
-    await localforage.removeItem('saveslot-auth');
-  }
 
-  const handleLogout = () => {
-    if (window.confirm('Vuoi davvero disconnetterti?')) {
-      handleLocalForageRemoveSaveslothAuth()
-      setUserId(null);
-      setUsername('');
-      setGames([]);
-      setWishlist([]);
-      setShowLoginModal(true);
-    }
+  const handleLogout = async () => {
+    console.log('🚪 Logging out...');
+    
+    setUserId(null);
+    setUsername(null);
+    setGames([]);
+    setWishlist([]);
+    setAnime([]);
+    setManga([]);
+    setShowLoginModal(true);
+    
+    // Clear all auth data
+    await localforage.removeItem('saveslot-auth');
+    await localforage.removeItem('anilist-token');
+    await localforage.removeItem('anilist-username');
+    await localforage.removeItem('anilist-user-id');
+    
+    console.log('✅ Logged out');
   };
 
 const saveToSupabase = useCallback(async (gamesData, wishlistData) => {
