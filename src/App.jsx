@@ -1039,7 +1039,7 @@ const updateAnimeOnAniList = async (animeItem) => {
       console.log('🔄 [AniList Sync] Updating existing entry:', animeItem.anilist_entry_id);
       
       const mutation = `
-        mutation ($id: Int, $status: MediaListStatus, $score: Float, $progress: Int) {
+        mutation ($id: Int, $status: MediaListStatus, $score: Int, $progress: Int) {
           SaveMediaListEntry(id: $id, status: $status, scoreRaw: $score, progress: $progress) {
             id
             status
