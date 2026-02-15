@@ -871,8 +871,16 @@ const getAniListUserInfo = async (token) => {
 
 // Import anime with OAuth token
 const importAniListWithToken = async (token) => {
+  if (!anilistUserId) {
+    console.error('❌ No AniList user ID');
+    alert('Errore: AniList user ID mancante. Riconnetti ad AniList.');
+    return;
+  }
+
+  console.log('📥 [Import] Importing for AniList user:', anilistUserId);
+  
   const query = `
-    query {
+    query ($userId: Int) {
       MediaListCollection(userId: $userId, type: ANIME) {
         lists {
           name
@@ -910,10 +918,18 @@ const importAniListWithToken = async (token) => {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${token}`
       },
-      body: JSON.stringify({ query })
+      body: JSON.stringify({ 
+        query,
+        variables: { userId: parseInt(anilistUserId) }
+      })
     });
 
     const data = await response.json();
+
+    if (data.errors) {
+      console.error('❌ [Import] GraphQL errors:', data.errors);
+      throw new Error(data.errors[0].message);
+    }
 
     if (data.data?.MediaListCollection) {
       const importedAnime = [];
@@ -937,7 +953,7 @@ const importAniListWithToken = async (token) => {
             season: entry.media.season,
             format: entry.media.format,
             anilist_id: entry.media.id,
-            anilist_entry_id: entry.id,
+            anilist_entry_id: entry.id,  // CRITICO!
             added_date: new Date().toISOString()
           };
 
@@ -951,11 +967,13 @@ const importAniListWithToken = async (token) => {
       if (userId && importedAnime.length > 0) {
         await supabase.from('anime').delete().eq('user_id', userId);
         await supabase.from('anime').insert(importedAnime);
-        console.log(`✅ Imported ${importedAnime.length} anime to database`);
+        console.log(`✅ [Import] Imported ${importedAnime.length} anime`);
+        alert(`✅ Importati ${importedAnime.length} anime da AniList!`);
       }
     }
   } catch (error) {
-    console.error('❌ Error importing anime:', error);
+    console.error('❌ [Import] Error:', error);
+    alert(`Errore durante l'import: ${error.message}`);
   }
 };
 
@@ -3846,6 +3864,8 @@ const addGame = () => {
                             const newStatus = e.target.value;
                             const updated = { ...showAnimeDetails, status: newStatus };
                             
+                            console.log('📝 [AnimeModal] Changing status to:', newStatus);
+                            
                             setAnime(anime.map(a => a.id === updated.id ? updated : a));
                             setShowAnimeDetails(updated);
                             
@@ -3856,10 +3876,13 @@ const addGame = () => {
                               .eq('id', updated.id);
                             
                             // Sync to AniList if connected
-                            if (isAnilistConnected) {
+                            if (isAnilistConnected && anilistToken) {
+                              console.log('🔄 [AnimeModal] Syncing to AniList...');
                               const success = await updateAnimeOnAniList(updated);
                               if (success) {
-                                console.log('✅ Synced to AniList');
+                                console.log('✅ [AnimeModal] Synced to AniList');
+                              } else {
+                                console.warn('⚠️ [AnimeModal] Failed to sync to AniList');
                               }
                             }
                           }}
@@ -3887,9 +3910,15 @@ const addGame = () => {
                             .eq('id', updated.id);
                           
                           // Sync to AniList
-                          if (isAnilistConnected) {
-                            await updateAnimeOnAniList(updated);
-                          }
+                            if (isAnilistConnected && anilistToken) {
+                              console.log('🔄 [AnimeModal] Syncing to AniList...');
+                              const success = await updateAnimeOnAniList(updated);
+                              if (success) {
+                                console.log('✅ [AnimeModal] Synced to AniList');
+                              } else {
+                                console.warn('⚠️ [AnimeModal] Failed to sync to AniList');
+                              }
+                            }
                         }}
                         className="w-24 px-4 py-2 bg-amber-600 text-white rounded-sm border-2 border-amber-500 focus:outline-none font-mono text-sm font-bold"
                       >
