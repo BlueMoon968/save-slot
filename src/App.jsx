@@ -472,12 +472,24 @@ useEffect(() => {
   };
 
 const updateAllCovers = async () => {
+  // Count games without covers
+  const gamesWithoutCovers = games.filter(g => !g.cover_url);
+  const gamesWithCovers = games.filter(g => g.cover_url);
+  
+  if (gamesWithoutCovers.length === 0) {
+    alert('✅ Tutti i giochi hanno già una copertina!');
+    return;
+  }
+  
   if (!window.confirm(
-    `⚠️ ATTENZIONE\n\n` +
-    `Questa operazione aggiornerà le copertine di TUTTI i giochi senza cover (${games.filter(g => !g.cover_url).length}).\n\n` +
-    `• Ci vorranno circa ${Math.ceil(games.filter(g => !g.cover_url).length * 2 / 60)} minuti\n` +
-    `• L'API ha limiti (1 richiesta ogni 2 secondi)\n` +
-    `• Il progresso viene salvato ogni 10 giochi\n\n` +
+    `🖼️ AGGIORNAMENTO COPERTINE\n\n` +
+    `Giochi SENZA copertina: ${gamesWithoutCovers.length}\n` +
+    `Giochi CON copertina: ${gamesWithCovers.length}\n` +
+    `Totale: ${games.length}\n\n` +
+    `Tempo stimato: ~${Math.ceil(gamesWithoutCovers.length * 2 / 60)} minuti\n` +
+    `(2 secondi per gioco, limiti API)\n\n` +
+    `⚠️ Verranno aggiornate SOLO le copertine mancanti.\n` +
+    `I giochi con copertina esistente non verranno toccati.\n\n` +
     `Continuare?`
   )) {
     return;
@@ -485,29 +497,37 @@ const updateAllCovers = async () => {
 
   setIsLoadingPrices(true);
   let updated = 0;
-  let skipped = 0;
+  let skippedHasCover = 0;
+  let skippedNoConsole = 0;
+  let skippedNotFound = 0;
   let errors = 0;
   let batch = [];
 
   try {
+    console.log(`🖼️ [UPDATE COVERS] Starting update for ${gamesWithoutCovers.length} games`);
+    
     const updatedGames = [...games];
 
     for (let i = 0; i < updatedGames.length; i++) {
       const game = updatedGames[i];
       
-      // Skip se ha già cover
+      // SKIP 1: Already has cover
       if (game.cover_url) {
-        skipped++;
+        skippedHasCover++;
+        console.log(`⏭️ [${i + 1}/${games.length}] ${game.title} - Already has cover`);
         continue;
       }
 
       try {
+        // SKIP 2: No console info
         const consoleObj = CONSOLES.find(c => c.name === game.console);
         if (!consoleObj) {
-          skipped++;
+          skippedNoConsole++;
+          console.log(`⏭️ [${i + 1}/${games.length}] ${game.title} - Console not found`);
           continue;
         }
 
+        // Search on TheGamesDB
         const params = new URLSearchParams({
           name: game.title,
           include: 'boxart',
@@ -515,10 +535,14 @@ const updateAllCovers = async () => {
         });
 
         const apiUrl = `${THEGAMESDB_BASE_URL}/Games/ByGameName?${params.toString()}`;
+        
+        console.log(`🔍 [${i + 1}/${games.length}] Searching: ${game.title} (${game.console})`);
+        
         const res = await fetch(apiUrl, { headers: { Accept: 'application/json' } });
         
         if (!res.ok) {
           errors++;
+          console.error(`❌ [${i + 1}/${games.length}] API Error ${res.status} for ${game.title}`);
           await new Promise(resolve => setTimeout(resolve, 2000));
           continue;
         }
@@ -544,45 +568,53 @@ const updateAllCovers = async () => {
             batch.push({ id: game.id, cover_url });
             updated++;
             
-            console.log(`✅ [${updated}] ${game.title}`);
+            console.log(`✅ [${i + 1}/${games.length}] ${game.title} - Cover found!`);
             
-            // SALVA BATCH ogni 10 aggiornamenti
+            // Save batch every 10 updates
             if (batch.length >= 10) {
               await saveBatchCovers(batch);
               batch = [];
             }
           } else {
-            skipped++;
+            skippedNotFound++;
+            console.log(`⏭️ [${i + 1}/${games.length}] ${game.title} - No cover image available`);
           }
         } else {
-          skipped++;
+          skippedNotFound++;
+          console.log(`⏭️ [${i + 1}/${games.length}] ${game.title} - Not found in database`);
         }
 
+        // Rate limiting: 2 seconds between requests
         await new Promise(resolve => setTimeout(resolve, 2000));
 
       } catch (error) {
-        console.error(`Error updating ${game.title}:`, error);
+        console.error(`❌ [${i + 1}/${games.length}] Error for ${game.title}:`, error);
         errors++;
       }
     }
 
-    // Salva ultimo batch residuo
+    // Save last batch
     if (batch.length > 0) {
       await saveBatchCovers(batch);
     }
 
-    // Aggiorna state finale
+    // Update state
     setGames(updatedGames);
 
     alert(
-      `✅ Aggiornamento completato!\n\n` +
-      `✅ Aggiornate: ${updated}\n` +
-      `⏭️ Saltate: ${skipped}\n` +
-      `❌ Errori: ${errors}`
+      `✅ AGGIORNAMENTO COMPLETATO!\n\n` +
+      `📊 RISULTATI:\n` +
+      `✅ Copertine aggiunte: ${updated}\n` +
+      `⏭️ Già presente: ${skippedHasCover}\n` +
+      `⏭️ Non trovate: ${skippedNotFound}\n` +
+      `⏭️ Console sconosciuta: ${skippedNoConsole}\n` +
+      `❌ Errori API: ${errors}\n\n` +
+      `📈 TOTALE PROCESSATI: ${games.length}\n` +
+      `🖼️ Giochi con cover ora: ${games.filter(g => g.cover_url).length}/${games.length}`
     );
 
   } catch (error) {
-    console.error('Error in updateAllCovers:', error);
+    console.error('❌ [UPDATE COVERS] Fatal error:', error);
     alert('❌ Errore durante l\'aggiornamento. Progresso salvato.');
   } finally {
     setIsLoadingPrices(false);
@@ -978,22 +1010,12 @@ const importAniListWithToken = async (token) => {
 };
 
 // Update anime on AniList (bidirectional sync)
+// Update or Create anime on AniList (bidirectional sync)
 const updateAnimeOnAniList = async (animeItem) => {
-  if (!anilistToken || !animeItem.anilist_entry_id) {
-    console.warn('⚠️ Cannot update AniList: missing token or entry ID');
+  if (!anilistToken) {
+    console.warn('⚠️ [AniList Sync] Cannot update: missing token');
     return false;
   }
-
-  const mutation = `
-    mutation ($id: Int, $status: MediaListStatus, $score: Int, $progress: Int) {
-      SaveMediaListEntry(id: $id, status: $status, scoreRaw: $score, progress: $progress) {
-        id
-        status
-        score
-        progress
-      }
-    }
-  `;
 
   // Convert status format
   const statusMap = {
@@ -1004,34 +1026,126 @@ const updateAnimeOnAniList = async (animeItem) => {
     'on_hold': 'PAUSED'
   };
 
-  const variables = {
-    id: animeItem.anilist_entry_id,
-    status: statusMap[animeItem.status],
-    score: animeItem.score * 10, // AniList usa scala 0-100
-    progress: animeItem.progress || 0
-  };
+  const anilistStatus = statusMap[animeItem.status];
+  
+  if (!anilistStatus) {
+    console.error('❌ [AniList Sync] Invalid status:', animeItem.status);
+    return false;
+  }
 
   try {
-    const response = await fetch('https://graphql.anilist.co', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${anilistToken}`
-      },
-      body: JSON.stringify({ query: mutation, variables })
-    });
+    // Case 1: Has entry_id → UPDATE existing entry
+    if (animeItem.anilist_entry_id) {
+      console.log('🔄 [AniList Sync] Updating existing entry:', animeItem.anilist_entry_id);
+      
+      const mutation = `
+        mutation ($id: Int, $status: MediaListStatus, $score: Float, $progress: Int) {
+          SaveMediaListEntry(id: $id, status: $status, scoreRaw: $score, progress: $progress) {
+            id
+            status
+            score
+            progress
+          }
+        }
+      `;
 
-    const data = await response.json();
+      const variables = {
+        id: animeItem.anilist_entry_id,
+        status: anilistStatus,
+        score: animeItem.score ? animeItem.score * 10 : 0, // AniList usa scala 0-100
+        progress: animeItem.progress || 0
+      };
 
-    if (data.errors) {
-      console.error('❌ AniList update error:', data.errors);
+      const response = await fetch('https://graphql.anilist.co', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${anilistToken}`
+        },
+        body: JSON.stringify({ query: mutation, variables })
+      });
+
+      const data = await response.json();
+
+      if (data.errors) {
+        console.error('❌ [AniList Sync] Update error:', data.errors);
+        return false;
+      }
+
+      console.log('✅ [AniList Sync] Updated:', animeItem.title);
+      return true;
+    } 
+    // Case 2: No entry_id but has anilist_id → CREATE new entry
+    else if (animeItem.anilist_id) {
+      console.log('➕ [AniList Sync] Creating new entry for:', animeItem.title);
+      
+      const mutation = `
+        mutation ($mediaId: Int, $status: MediaListStatus, $score: Int, $progress: Int) {
+          SaveMediaListEntry(mediaId: $mediaId, status: $status, scoreRaw: $score, progress: $progress) {
+            id
+            status
+            score
+            progress
+            mediaId
+          }
+        }
+      `;
+
+      const variables = {
+        mediaId: animeItem.anilist_id,
+        status: anilistStatus,
+        score: animeItem.score ? animeItem.score * 10 : 0,
+        progress: animeItem.progress || 0
+      };
+
+      const response = await fetch('https://graphql.anilist.co', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${anilistToken}`
+        },
+        body: JSON.stringify({ query: mutation, variables })
+      });
+
+      const data = await response.json();
+
+      if (data.errors) {
+        console.error('❌ [AniList Sync] Create error:', data.errors);
+        return false;
+      }
+
+      console.log('✅ [AniList Sync] Created entry:', data.data.SaveMediaListEntry.id);
+      
+      // IMPORTANTE: Salva il nuovo entry_id nel database
+      const newEntryId = data.data.SaveMediaListEntry.id;
+      
+      // Update in state
+      setAnime(prevAnime => 
+        prevAnime.map(a => 
+          a.id === animeItem.id 
+            ? { ...a, anilist_entry_id: newEntryId }
+            : a
+        )
+      );
+      
+      // Update in database
+      await supabase
+        .from('anime')
+        .update({ anilist_entry_id: newEntryId })
+        .eq('id', animeItem.id);
+      
+      console.log('💾 [AniList Sync] Saved entry_id:', newEntryId);
+      
+      return true;
+    }
+    // Case 3: No anilist_id at all → Cannot sync
+    else {
+      console.warn('⚠️ [AniList Sync] Cannot sync: no anilist_id for', animeItem.title);
       return false;
     }
 
-    console.log('✅ Updated on AniList:', animeItem.title);
-    return true;
   } catch (error) {
-    console.error('❌ Error updating AniList:', error);
+    console.error('❌ [AniList Sync] Error:', error);
     return false;
   }
 };
@@ -1199,6 +1313,7 @@ const addAnimeFromSearch = async (animeData) => {
     season: animeData.season,
     format: animeData.format,
     anilist_id: animeData.id,
+    anilist_entry_id: null,     // ← Null perché non ancora creato su AniList
     added_date: new Date().toISOString()
   };
   
@@ -1207,8 +1322,18 @@ const addAnimeFromSearch = async (animeData) => {
   // Save to Supabase
   try {
     await supabase.from('anime').insert([newAnime]);
+    console.log('💾 [Add Anime] Saved to database');
+    
+    // Sync to AniList if connected
+    if (isAnilistConnected && anilistToken) {
+      console.log('🔄 [Add Anime] Syncing to AniList...');
+      const success = await updateAnimeOnAniList(newAnime);
+      if (success) {
+        console.log('✅ [Add Anime] Created on AniList');
+      }
+    }
   } catch (error) {
-    console.error('Error saving anime:', error);
+    console.error('❌ [Add Anime] Error:', error);
   }
   
   setShowAddAnimeModal(false);
@@ -3832,6 +3957,22 @@ const addGame = () => {
                     <h2 className="text-2xl font-black text-white font-mono mb-2">
                       {showAnimeDetails.title}
                     </h2>
+                    {/* Sync Status Badge */}
+                    <div className="flex gap-2 mb-4">
+                      {showAnimeDetails.anilist_entry_id ? (
+                        <span className="px-3 py-1 bg-green-600 text-white rounded-full text-xs font-mono font-bold flex items-center gap-1">
+                          ✓ Synced to AniList
+                        </span>
+                      ) : showAnimeDetails.anilist_id ? (
+                        <span className="px-3 py-1 bg-amber-600 text-white rounded-full text-xs font-mono font-bold flex items-center gap-1">
+                          ⏳ Will sync on update
+                        </span>
+                      ) : (
+                        <span className="px-3 py-1 bg-slate-600 text-white rounded-full text-xs font-mono font-bold flex items-center gap-1">
+                          ✗ Not on AniList
+                        </span>
+                      )}
+                    </div>
                     {showAnimeDetails.title_english && showAnimeDetails.title_english !== showAnimeDetails.title && (
                       <p className="text-slate-400 font-mono mb-4">{showAnimeDetails.title_english}</p>
                     )}
