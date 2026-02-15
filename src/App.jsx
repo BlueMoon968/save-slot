@@ -1150,6 +1150,62 @@ const updateAnimeOnAniList = async (animeItem) => {
   }
 };
 
+// Delete anime from AniList
+const deleteAnimeFromAniList = async (animeItem) => {
+  if (!anilistToken) {
+    console.warn('⚠️ [AniList Delete] Cannot delete: missing token');
+    return false;
+  }
+
+  if (!animeItem.anilist_entry_id) {
+    console.warn('⚠️ [AniList Delete] No entry_id, nothing to delete on AniList');
+    return true; // Non è un errore, semplicemente non esiste su AniList
+  }
+
+  try {
+    console.log('🗑️ [AniList Delete] Deleting entry:', animeItem.anilist_entry_id);
+    
+    const mutation = `
+      mutation ($id: Int) {
+        DeleteMediaListEntry(id: $id) {
+          deleted
+        }
+      }
+    `;
+
+    const variables = {
+      id: animeItem.anilist_entry_id
+    };
+
+    const response = await fetch('https://graphql.anilist.co', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${anilistToken}`
+      },
+      body: JSON.stringify({ query: mutation, variables })
+    });
+
+    const data = await response.json();
+
+    if (data.errors) {
+      console.error('❌ [AniList Delete] Error:', data.errors);
+      return false;
+    }
+
+    if (data.data?.DeleteMediaListEntry?.deleted) {
+      console.log('✅ [AniList Delete] Deleted from AniList:', animeItem.title);
+      return true;
+    }
+
+    return false;
+
+  } catch (error) {
+    console.error('❌ [AniList Delete] Fatal error:', error);
+    return false;
+  }
+};
+
 // Disconnect from AniList
 const disconnectAniList = async () => {
   if (window.confirm('Disconnettere AniList? I tuoi anime rimarranno salvati localmente.')) {
@@ -1376,6 +1432,38 @@ const addMangaFromSearch = async (mangaData) => {
   setShowAddMangaModal(false);
   setMangaSearchQuery('');
   setMangaSearchResults([]);
+};
+
+const deleteMangaFromAniList = async (mangaItem) => {
+  if (!anilistToken || !mangaItem.anilist_entry_id) return true;
+
+  try {
+    const mutation = `
+      mutation ($id: Int) {
+        DeleteMediaListEntry(id: $id) {
+          deleted
+        }
+      }
+    `;
+
+    const response = await fetch('https://graphql.anilist.co', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${anilistToken}`
+      },
+      body: JSON.stringify({ 
+        query: mutation, 
+        variables: { id: mangaItem.anilist_entry_id }
+      })
+    });
+
+    const data = await response.json();
+    return data.data?.DeleteMediaListEntry?.deleted || false;
+  } catch (error) {
+    console.error('❌ Delete manga error:', error);
+    return false;
+  }
 };
 
   const saveAchievementsOnServer = async (updatedNotified,uid) => {
@@ -4088,19 +4176,41 @@ const addGame = () => {
                 </div>
 
                 <div className="flex gap-3">
-                  <button
-                    onClick={async () => {
-                      if (window.confirm('Eliminare questo anime?')) {
-                        setAnime(anime.filter(a => a.id !== showAnimeDetails.id));
-                        await supabase.from('anime').delete().eq('id', showAnimeDetails.id);
-                        setShowAnimeDetails(null);
+                <button
+                  onClick={async () => {
+                    const confirmMessage = showAnimeDetails.anilist_entry_id
+                      ? `Eliminare "${showAnimeDetails.title}"?\n\n⚠️ Verrà rimosso anche da AniList!`
+                      : `Eliminare "${showAnimeDetails.title}"?`;
+                    
+                    if (window.confirm(confirmMessage)) {
+                      console.log('🗑️ [Delete Anime] Starting deletion:', showAnimeDetails.title);
+                      
+                      // Delete from local state
+                      setAnime(anime.filter(a => a.id !== showAnimeDetails.id));
+                      
+                      // Delete from database
+                      await supabase.from('anime').delete().eq('id', showAnimeDetails.id);
+                      console.log('✅ [Delete Anime] Deleted from database');
+                      
+                      // Delete from AniList if connected and has entry_id
+                      if (isAnilistConnected && anilistToken && showAnimeDetails.anilist_entry_id) {
+                        console.log('🔄 [Delete Anime] Deleting from AniList...');
+                        const success = await deleteAnimeFromAniList(showAnimeDetails);
+                        if (success) {
+                          console.log('✅ [Delete Anime] Deleted from AniList');
+                        } else {
+                          console.warn('⚠️ [Delete Anime] Failed to delete from AniList (already deleted or not found)');
+                        }
                       }
-                    }}
-                    className="flex-1 px-6 py-3 bg-red-600 text-white rounded-sm hover:bg-red-700 transition-all font-bold border-4 border-red-500 font-mono"
-                  >
-                    <Trash2 className="w-4 h-4 inline mr-2" />
-                    Delete
-                  </button>
+                      
+                      setShowAnimeDetails(null);
+                    }
+                  }}
+                  className="flex-1 px-6 py-3 bg-red-600 text-white rounded-sm hover:bg-red-700 transition-all font-bold border-4 border-red-500 font-mono"
+                >
+                  <Trash2 className="w-4 h-4 inline mr-2" />
+                  Delete
+                </button>
                   {showAnimeDetails.anilist_id && (
                     <a
                       href={`https://anilist.co/anime/${showAnimeDetails.anilist_id}`}
