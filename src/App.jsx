@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { Search, Plus, Grid3x3, List, Trash2, Edit2, X, BarChart3, Heart, Camera, TrendingUp, Package, Star, Gamepad2, Download, Upload, RefreshCw, Cloud, CloudOff, LogOut, User } from 'lucide-react';
+import { Search, Plus, Grid3x3, List, Trash2, Edit2, X, BarChart3, Heart, Camera, TrendingUp, Package, Star, Gamepad2, Download, Upload, RefreshCw, Cloud, CloudOff, LogOut, User, Layers } from 'lucide-react';
 import { supabase } from './supabase';
 import achievementsImage from './assets/achievements.png';
 import AnimeCard from './components/AnimeCard';
@@ -9,6 +9,7 @@ import localforage from 'localforage';
 const SERVER_API = import.meta.env.VITE_SUPABASE_BARCODE
 const THEGAMESDB_BASE_URL = import.meta.env.VITE_SUPABASE_TGDB
 const ANILIST_BASE_URL = import.meta.env.VITE_SUPABASE_ANILIST
+const IGDB_URL = import.meta.env.VITE_SUPABASE_IGDB
 
 // Unique ID generator
 let uniqueIdCounter = 0;
@@ -299,6 +300,17 @@ function App() {
   const [showEditModal, setShowEditModal] = useState(false);
   const [showBarcodeModal, setShowBarcodeModal] = useState(false);
   const [barcodeInput, setBarcodeInput] = useState('');
+  const [showSeriesModal, setShowSeriesModal] = useState(false);
+  const [seriesQuery, setSeriesQuery] = useState('');
+  const [seriesResults, setSeriesResults] = useState([]);
+  const [isSearchingSeries, setIsSearchingSeries] = useState(false);
+  const [seriesPage, setSeriesPage] = useState(1);
+  const [seriesHasMore, setSeriesHasMore] = useState(false);
+  const [seriesAddedIds, setSeriesAddedIds] = useState(new Set());
+  const [seriesError, setSeriesError] = useState('');
+  const [igdbCollections, setIgdbCollections] = useState([]);
+  const [selectedCollection, setSelectedCollection] = useState(null);
+  const [useIGDBSearch, setUseIGDBSearch] = useState(false);
   const [isScanningBarcode, setIsScanningBarcode] = useState(false);
   const [isUsingCamera, setIsUsingCamera] = useState(false);
   const [isSearchingAPI, setIsSearchingAPI] = useState(false);
@@ -2131,6 +2143,184 @@ useEffect(() => {
     }
   };
 
+  const igdbQuery = async (endpoint, query) => {
+    const res = await fetch(IGDB_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ endpoint, query }),
+    });
+    if (!res.ok) throw new Error(`IGDB proxy ${res.status}`);
+    return res.json();
+  };
+
+  const igdbSearchGames = async (query) => {
+    if (!query || query.length < 2) { setSearchResults([]); return; }
+    setIsSearching(true);
+    try {
+      const games = await igdbQuery('games', `
+        search "${query.replace(/"/g, '')}";
+        fields name, first_release_date, platforms.abbreviation, platforms.name, cover.url;
+        where category = (0, 8, 9, 10, 11);
+        limit 100;
+      `);
+      if (!Array.isArray(games)) throw new Error(games?.error || 'IGDB error');
+
+      const results = [];
+      games.forEach(g => {
+        const coverUrl = g.cover?.url
+          ? `https:${g.cover.url.replace('t_thumb', 't_cover_big')}`
+          : '';
+        const releaseYear = g.first_release_date
+          ? new Date(g.first_release_date * 1000).getFullYear().toString()
+          : '';
+        const platforms = g.platforms?.length ? g.platforms : [null];
+
+        platforms.forEach(p => {
+          const consoleObj = p
+            ? CONSOLES.find(c =>
+                c.aliases.some(a =>
+                  a.toLowerCase() === (p.name || '').toLowerCase() ||
+                  a.toLowerCase() === (p.abbreviation || '').toLowerCase()
+                )
+              )
+            : null;
+          results.push({
+            id: g.id,
+            game_title: g.name,
+            platform: consoleObj?.id ?? null,
+            _consoleShortName: consoleObj?.name || '',
+            platformName: consoleObj?.fullName || p?.name || 'Unknown Platform',
+            cover_url: coverUrl,
+            release_date: releaseYear,
+            uniqueKey: generateUniqueId()
+          });
+        });
+      });
+
+      setSearchResults(results);
+    } catch (e) {
+      console.error('[IGDB game search]', e);
+      setSearchResults([]);
+    } finally {
+      setIsSearching(false);
+    }
+  };
+
+  const searchSeriesGames = async (query, collectionId = null) => {
+    if (!query || query.trim().length < 2) return;
+    setIsSearchingSeries(true);
+    setSeriesResults([]);
+    setSeriesError('');
+    if (!collectionId) {
+      setIgdbCollections([]);
+      setSelectedCollection(null);
+    }
+
+    try {
+      let targetCollectionId = collectionId;
+
+      if (!targetCollectionId) {
+        // Step 1: find matching collections
+        const collections = await igdbQuery('collections', `
+          search "${query.trim()}";
+          fields name, slug, games;
+          limit 10;
+        `);
+        if (collections.error) throw new Error(collections.error);
+
+        const filtered = (collections || []).filter(c =>
+          c.name.toLowerCase().includes(query.trim().toLowerCase())
+        );
+
+        if (filtered.length === 0) {
+          // No collection found — fall back to direct game search
+          await searchIGDBByName(query.trim());
+          return;
+        }
+        if (filtered.length === 1) {
+          targetCollectionId = filtered[0].id;
+          setSelectedCollection(filtered[0]);
+        } else {
+          // Multiple matches — let user pick
+          setIgdbCollections(filtered);
+          setIsSearchingSeries(false);
+          return;
+        }
+      }
+
+      // Step 2: fetch all games in the collection (paginate with offset)
+      const allGames = [];
+      let offset = 0;
+      while (true) {
+        const batch = await igdbQuery('games', `
+          fields name, first_release_date, platforms.abbreviation, platforms.name, cover.url, category;
+          where collection = ${targetCollectionId} & category = (0, 8, 9, 10, 11);
+          sort first_release_date asc;
+          limit 500;
+          offset ${offset};
+        `);
+        if (batch.error) throw new Error(batch.error);
+        if (!batch || batch.length === 0) break;
+        allGames.push(...batch);
+        if (batch.length < 500) break;
+        offset += 500;
+      }
+
+      setSeriesResults(processIGDBGames(allGames));
+    } catch (e) {
+      console.error('[SeriesTracker] IGDB error:', e);
+      setSeriesError(`Errore IGDB: ${e.message}`);
+    } finally {
+      setIsSearchingSeries(false);
+    }
+  };
+
+  const searchIGDBByName = async (query) => {
+    try {
+      const games = await igdbQuery('games', `
+        search "${query}";
+        fields name, first_release_date, platforms.abbreviation, platforms.name, cover.url, category;
+        where category = (0, 8, 9, 10, 11);
+        sort first_release_date asc;
+        limit 500;
+      `);
+      if (games.error) throw new Error(games.error);
+      setSeriesResults(processIGDBGames(games || []));
+    } catch (e) {
+      console.error('[SeriesTracker] IGDB name search error:', e);
+      setSeriesError(`Errore IGDB: ${e.message}`);
+    } finally {
+      setIsSearchingSeries(false);
+    }
+  };
+
+  const processIGDBGames = (games) => {
+    // Group by normalised title, merge platforms, keep best cover
+    const map = new Map();
+    (games || []).forEach(g => {
+      const key = g.name.toLowerCase().trim();
+      const coverUrl = g.cover?.url
+        ? `https:${g.cover.url.replace('t_thumb', 't_cover_small')}`
+        : '';
+      const year = g.first_release_date
+        ? new Date(g.first_release_date * 1000).getFullYear()
+        : null;
+      const platNames = (g.platforms || [])
+        .map(p => p.abbreviation || p.name)
+        .filter(Boolean);
+
+      if (!map.has(key)) {
+        map.set(key, { igdbId: g.id, title: g.name, cover_url: coverUrl, platforms: platNames, year });
+      } else {
+        const entry = map.get(key);
+        platNames.forEach(p => { if (!entry.platforms.includes(p)) entry.platforms.push(p); });
+        if (!entry.cover_url && coverUrl) entry.cover_url = coverUrl;
+        if (!entry.year && year) entry.year = year;
+      }
+    });
+    return [...map.values()];
+  };
+
   const searchAPIForCover = async (title, consoleShortName) => {
     setIsSearchingAPI(true);
     setApiSearchResults([]);
@@ -2359,17 +2549,13 @@ useEffect(() => {
   };
 
   const selectGameFromSearch = (game) => {
-    let matchedConsole = CONSOLES.find(c => c.id === game.platform);
-
-      // Debug: log platform ID to find correct mapping
-      if (!matchedConsole) {
-        console.log('🔍 Unknown platform ID:', game.platform, 'for game:', game.game_title);
-      }
-
+    // _consoleShortName is pre-resolved for IGDB results; fall back to TGDB platform ID lookup
+    const consoleName = game._consoleShortName ||
+      (CONSOLES.find(c => c.id === game.platform)?.name ?? '');
 
     setNewGame({
       title: game.game_title,
-      console: matchedConsole ? matchedConsole.name : '',
+      console: consoleName,
       version: 'PAL',
       cover_url: game.cover_url || '',
       release_date: game.release_date || '',
@@ -2822,6 +3008,21 @@ const addGame = () => {
                 title="Update all game covers"
               >
                 🖼️ UPDATE COVERS
+              </button>
+              <button
+                onClick={() => {
+                  setShowSeriesModal(true);
+                  setSeriesQuery('');
+                  setSeriesResults([]);
+                  setSeriesHasMore(false);
+                  setSeriesAddedIds(new Set());
+                  setSeriesError('');
+                }}
+                className="px-3 py-2 bg-teal-600 text-white rounded-sm hover:bg-teal-700 transition-all font-bold border-4 border-teal-500 font-mono text-xs flex items-center gap-1"
+                title="Series Tracker - verifica i titoli mancanti"
+              >
+                <Layers className="w-3 h-3 sm:w-4 sm:h-4" />
+                <span className="hidden sm:inline">SERIES</span>
               </button>
             </div>
           </div>
@@ -3509,37 +3710,66 @@ const addGame = () => {
                 </div>
 
                 <div className="mb-4 sm:mb-6">
-                  <label className="block text-amber-400 text-sm font-semibold mb-2 font-mono">
-                    SEARCH DATABASE
-                  </label>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="text-amber-400 text-sm font-semibold font-mono">SEARCH DATABASE</label>
+                    <div className="flex items-center gap-1">
+                      <span className="text-slate-500 font-mono text-xs mr-1">fonte:</span>
+                      <button
+                        type="button"
+                        onClick={() => { setUseIGDBSearch(false); setSearchResults([]); }}
+                        className={`px-2 py-0.5 font-mono text-xs rounded-sm border font-bold transition-colors ${
+                          !useIGDBSearch ? 'bg-amber-600 border-amber-500 text-white' : 'bg-slate-700 border-slate-600 text-slate-400 hover:text-white'
+                        }`}
+                        title="TheGamesDB — ricerca con filtro piattaforma"
+                      >TGDB</button>
+                      <button
+                        type="button"
+                        onClick={() => { setUseIGDBSearch(true); setSearchResults([]); }}
+                        className={`px-2 py-0.5 font-mono text-xs rounded-sm border font-bold transition-colors ${
+                          useIGDBSearch ? 'bg-teal-600 border-teal-500 text-white' : 'bg-slate-700 border-slate-600 text-slate-400 hover:text-white'
+                        }`}
+                        title="IGDB — database più completo, cover migliori"
+                      >IGDB</button>
+                    </div>
+                  </div>
                   <div className="flex flex-col sm:flex-row gap-2">
-                    <select
-                      onChange={(e) => {
-                        setNewGame({ ...newGame, console: e.target.value });
-                      }}
-                      className="px-3 sm:px-4 py-2 bg-slate-700 text-white rounded-sm border-2 border-slate-600 focus:outline-none focus:border-amber-500 font-mono text-sm"
-                      value={newGame.console}
-                    >
-                      <option value="">All Platforms</option>
-                      {CONSOLES.map(c => (
-                        <option key={c.name} value={c.name}>{c.fullName}</option>
-                      ))}
-                    </select>
+                    {!useIGDBSearch && (
+                      <select
+                        onChange={(e) => {
+                          setNewGame({ ...newGame, console: e.target.value });
+                        }}
+                        className="px-3 sm:px-4 py-2 bg-slate-700 text-white rounded-sm border-2 border-slate-600 focus:outline-none focus:border-amber-500 font-mono text-sm"
+                        value={newGame.console}
+                      >
+                        <option value="">All Platforms</option>
+                        {CONSOLES.map(c => (
+                          <option key={c.name} value={c.name}>{c.fullName}</option>
+                        ))}
+                      </select>
+                    )}
                     <div className="flex-1 relative">
                       <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-slate-400 w-4 h-4 sm:w-5 sm:h-5" />
                       <input
                         type="text"
-                        placeholder="Search game title..."
+                        placeholder={useIGDBSearch ? 'Search on IGDB (200k+ games)...' : 'Search game title...'}
                         onChange={(e) => {
                           const query = e.target.value;
                           if (query.length >= 2) {
-                            const consoleObj = CONSOLES.find(c => c.name === newGame.console);
-                            searchGames(query, consoleObj?.id);
+                            if (useIGDBSearch) {
+                              igdbSearchGames(query);
+                            } else {
+                              const consoleObj = CONSOLES.find(c => c.name === newGame.console);
+                              searchGames(query, consoleObj?.id);
+                            }
                           } else {
                             setSearchResults([]);
                           }
                         }}
-                        className="w-full pl-9 sm:pl-10 pr-4 py-2 bg-slate-700 text-white rounded-sm border-2 border-slate-600 focus:outline-none focus:border-amber-500 font-mono text-sm"
+                        className={`w-full pl-9 sm:pl-10 pr-4 py-2 bg-slate-700 text-white rounded-sm border-2 focus:outline-none font-mono text-sm ${
+                          useIGDBSearch
+                            ? 'border-teal-700 focus:border-teal-500'
+                            : 'border-slate-600 focus:border-amber-500'
+                        }`}
                       />
                     </div>
                   </div>
@@ -4560,6 +4790,240 @@ const addGame = () => {
             </div>
           </div>
         )}
+
+      {/* Series Tracker Modal */}
+      {showSeriesModal && (() => {
+        const normalize = (s) => s.toLowerCase().trim();
+        const baseTitle = (s) => normalize(s).replace(/\s*[:\-–([].*/u, '').trim();
+        const titleMatches = (a, b) => {
+          const na = normalize(a), nb = normalize(b);
+          return na === nb || na.startsWith(nb) || nb.startsWith(na) || baseTitle(a) === baseTitle(b);
+        };
+        const isOwned = (title) => games.some(g => titleMatches(title, g.title));
+        const isWishlisted = (title) => !isOwned(title) && wishlist.some(g => titleMatches(title, g.title));
+
+        const quickAddToWishlist = (item) => {
+          const gameToAdd = {
+            id: generateUniqueId(),
+            user_id: userId,
+            title: item.title,
+            console: '',
+            version: 'PAL',
+            cover_url: item.cover_url,
+            release_date: item.year ? String(item.year) : '',
+            api_id: item.igdbId || null,
+            barcode: '',
+            is_wishlist: true,
+            added_date: new Date().toISOString()
+          };
+          setWishlist(prev => [...prev, gameToAdd]);
+          setSeriesAddedIds(prev => new Set([...prev, item.igdbId]));
+        };
+
+        // seriesResults already deduplicated by title by processIGDBGames
+        const sorted = [...seriesResults].sort((a, b) => {
+          const rankA = isOwned(a.title) ? 0 : isWishlisted(a.title) ? 1 : 2;
+          const rankB = isOwned(b.title) ? 0 : isWishlisted(b.title) ? 1 : 2;
+          if (rankA !== rankB) return rankA - rankB;
+          return (a.year || 9999) - (b.year || 9999);
+        });
+
+        const localOnly = seriesQuery.trim().length >= 2
+          ? games.filter(g =>
+              normalize(g.title).includes(normalize(seriesQuery)) &&
+              !seriesResults.some(r => titleMatches(r.title, g.title))
+            )
+          : [];
+
+        const ownedCount = seriesResults.filter(r => isOwned(r.title)).length + localOnly.length;
+        const wishlistCount = seriesResults.filter(r => isWishlisted(r.title)).length;
+        const missingCount = seriesResults.filter(r => !isOwned(r.title) && !isWishlisted(r.title)).length;
+
+        const GameRow = ({ item, owned, wishlisted, added, fromLocal }) => (
+          <div className={`flex items-center gap-3 p-2 rounded-sm border-2 transition-colors ${
+            owned ? 'border-green-700 bg-green-900 bg-opacity-20'
+            : wishlisted ? 'border-purple-700 bg-purple-900 bg-opacity-20'
+            : 'border-slate-700 bg-slate-700 bg-opacity-30'
+          }`}>
+            <div className="w-10 h-14 flex-shrink-0 bg-slate-700 rounded-sm overflow-hidden border border-slate-600">
+              {item.cover_url
+                ? <img src={item.cover_url} alt="" className="w-full h-full object-cover" loading="lazy" />
+                : <div className="w-full h-full flex items-center justify-center text-slate-500 text-xs">🎮</div>}
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-white font-mono text-sm font-bold truncate">{item.title}</p>
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-0.5">
+                {item.year && <span className="text-slate-500 font-mono text-xs">{item.year}</span>}
+                {!fromLocal && item.platforms?.length > 0 && (
+                  <span className="text-slate-400 font-mono text-xs truncate">
+                    {item.platforms.slice(0, 5).join(' · ')}
+                    {item.platforms.length > 5 ? ` +${item.platforms.length - 5}` : ''}
+                  </span>
+                )}
+                {fromLocal && <span className="text-slate-400 font-mono text-xs">{item.console}</span>}
+              </div>
+            </div>
+            <div className="flex-shrink-0">
+              {owned
+                ? <span className="px-2 py-1 bg-green-700 text-green-200 rounded-sm font-mono text-xs font-bold">✓ OWNED</span>
+                : wishlisted || added
+                ? <span className="px-2 py-1 bg-purple-700 text-purple-200 rounded-sm font-mono text-xs font-bold">❤ WL</span>
+                : <button
+                    onClick={() => quickAddToWishlist(item)}
+                    className="px-2 py-1 bg-slate-600 hover:bg-purple-700 text-slate-300 hover:text-white rounded-sm font-mono text-xs font-bold border border-slate-500 hover:border-purple-500 transition-colors"
+                  >+ WL</button>
+              }
+            </div>
+          </div>
+        );
+
+        return (
+          <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center p-4 z-50">
+            <div className="bg-slate-800 rounded-sm w-full max-w-2xl border-4 border-slate-600 shadow-2xl relative flex flex-col max-h-[90vh]">
+              <div className="absolute top-0 left-0 right-0 h-3 bg-slate-900 rounded-t-sm"></div>
+
+              {/* Header */}
+              <div className="p-5 pt-7 border-b-4 border-slate-700 flex-shrink-0">
+                <div className="flex justify-between items-center mb-4">
+                  <h2 className="text-xl font-bold text-white flex items-center gap-2 font-mono">
+                    <Layers className="w-5 h-5 text-teal-400" />
+                    SERIES TRACKER
+                    <span className="text-xs text-teal-600 font-normal">via IGDB</span>
+                  </h2>
+                  <button onClick={() => setShowSeriesModal(false)} className="text-slate-400 hover:text-white">
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={seriesQuery}
+                    onChange={(e) => setSeriesQuery(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && seriesQuery.trim().length >= 2) searchSeriesGames(seriesQuery);
+                    }}
+                    placeholder="Es: Tales of, Atelier, Final Fantasy, Persona..."
+                    className="flex-1 px-3 py-2 bg-slate-700 text-white rounded-sm border-2 border-slate-600 focus:outline-none focus:border-teal-500 font-mono text-sm"
+                    autoFocus
+                  />
+                  <button
+                    onClick={() => searchSeriesGames(seriesQuery)}
+                    disabled={seriesQuery.trim().length < 2 || isSearchingSeries}
+                    className="px-4 py-2 bg-teal-600 text-white rounded-sm hover:bg-teal-700 transition-all font-bold border-4 border-teal-500 font-mono text-sm disabled:opacity-50"
+                  >
+                    {isSearchingSeries ? '⏳' : '🔍'}
+                  </button>
+                  {(seriesResults.length > 0 || igdbCollections.length > 0 || seriesQuery) && !isSearchingSeries && (
+                    <button
+                      onClick={() => {
+                        setSeriesResults([]);
+                        setSeriesQuery('');
+                        setIgdbCollections([]);
+                        setSelectedCollection(null);
+                      }}
+                      className="px-3 py-2 bg-slate-700 text-slate-400 hover:text-white rounded-sm border-2 border-slate-600 font-mono text-sm"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
+
+                {/* Collection picker — shown when IGDB returns multiple matches */}
+                {igdbCollections.length > 1 && (
+                  <div className="mt-3 space-y-1">
+                    <p className="text-slate-400 font-mono text-xs">Più serie trovate — scegli:</p>
+                    {igdbCollections.map(col => (
+                      <button
+                        key={col.id}
+                        onClick={() => {
+                          setSelectedCollection(col);
+                          setIgdbCollections([]);
+                          searchSeriesGames(seriesQuery, col.id);
+                        }}
+                        className="w-full text-left px-3 py-2 bg-slate-700 hover:bg-teal-700 text-white rounded-sm border border-slate-600 hover:border-teal-500 font-mono text-sm transition-colors"
+                      >
+                        {col.name}
+                        <span className="text-slate-400 text-xs ml-2">({col.games?.length ?? '?'} titoli)</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {selectedCollection && seriesResults.length > 0 && (
+                  <p className="mt-2 text-teal-400 font-mono text-xs">
+                    Serie: <span className="font-bold">{selectedCollection.name}</span>
+                  </p>
+                )}
+
+                {seriesError && (
+                  <div className="mt-3 px-3 py-2 bg-red-900 bg-opacity-50 border border-red-700 rounded-sm text-red-300 font-mono text-xs">
+                    ⚠ {seriesError}
+                  </div>
+                )}
+
+                {(seriesResults.length > 0 || localOnly.length > 0) && (
+                  <div className="flex flex-wrap gap-3 mt-3 text-xs font-mono items-center">
+                    <span className="text-green-400">✓ {ownedCount} posseduti</span>
+                    <span className="text-purple-400">❤ {wishlistCount} wishlist</span>
+                    <span className="text-slate-400">✗ {missingCount} mancanti</span>
+                    <span className="text-slate-500 ml-auto">{seriesResults.length} titoli IGDB</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Results */}
+              <div className="overflow-y-auto flex-1 p-3 space-y-2">
+                {isSearchingSeries && (
+                  <div className="text-center py-12 text-slate-400 font-mono text-sm">⏳ Interrogazione IGDB...</div>
+                )}
+                {!isSearchingSeries && seriesResults.length === 0 && localOnly.length === 0 && igdbCollections.length === 0 && seriesQuery.length === 0 && (
+                  <div className="text-center py-12 text-slate-500 font-mono text-sm">
+                    <Layers className="w-10 h-10 mx-auto mb-3 opacity-30" />
+                    <p>Inserisci il nome di una serie per scoprire</p>
+                    <p>quali titoli hai e quali ti mancano.</p>
+                    <p className="mt-2 text-slate-600 text-xs">Database: IGDB (oltre 200.000 giochi)</p>
+                  </div>
+                )}
+                {!isSearchingSeries && seriesResults.length === 0 && localOnly.length === 0 && igdbCollections.length === 0 && seriesQuery.length >= 2 && !seriesError && (
+                  <div className="text-center py-12 text-slate-400 font-mono text-sm">Nessun risultato trovato per "{seriesQuery}".</div>
+                )}
+
+                {sorted.map((item) => (
+                  <GameRow
+                    key={item.igdbId}
+                    item={item}
+                    owned={isOwned(item.title)}
+                    wishlisted={isWishlisted(item.title)}
+                    added={seriesAddedIds.has(item.igdbId)}
+                    fromLocal={false}
+                  />
+                ))}
+
+                {localOnly.length > 0 && (
+                  <>
+                    <div className="pt-2 pb-1 px-1">
+                      <p className="text-slate-500 font-mono text-xs uppercase tracking-wider">
+                        Nella tua collezione (non su IGDB)
+                      </p>
+                    </div>
+                    {localOnly.map((g) => (
+                      <GameRow
+                        key={g.id}
+                        item={{ igdbId: null, title: g.title, cover_url: g.cover_url, year: null, platforms: [], console: g.console }}
+                        owned={true}
+                        wishlisted={false}
+                        added={false}
+                        fromLocal={true}
+                      />
+                    ))}
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Footer */}
       <div className="mt-auto border-t-4 border-slate-700 bg-slate-900 py-4 sm:py-6 relative overflow-hidden">
