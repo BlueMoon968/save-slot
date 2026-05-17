@@ -1,12 +1,11 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { Search, Plus, Grid3x3, List, Trash2, Edit2, X, BarChart3, Heart, Camera, TrendingUp, Package, Star, Gamepad2, Download, Upload, RefreshCw, Cloud, CloudOff, LogOut, User, Layers } from 'lucide-react';
+import { Search, Plus, Grid3x3, List, Trash2, Edit2, X, BarChart3, Heart, TrendingUp, Package, Star, Gamepad2, Download, Upload, RefreshCw, Cloud, CloudOff, LogOut, User, Layers } from 'lucide-react';
 import { supabase } from './supabase';
 import achievementsImage from './assets/achievements.png';
 import AnimeCard from './components/AnimeCard';
 import MangaCard from './components/MangaCard';
 import localforage from 'localforage';
 
-const SERVER_API = import.meta.env.VITE_SUPABASE_BARCODE
 const THEGAMESDB_BASE_URL = import.meta.env.VITE_SUPABASE_TGDB
 const ANILIST_BASE_URL = import.meta.env.VITE_SUPABASE_ANILIST
 const IGDB_URL = import.meta.env.VITE_SUPABASE_IGDB
@@ -171,6 +170,10 @@ const ACHIEVEMENTS = [
 
 
 const VERSIONS = ['PAL', 'NTSC', 'NTSC-J', 'JP'];
+const GAME_DATA_SOURCES = {
+  TGDB: 'tgdb',
+  IGDB: 'igdb'
+};
 
 const CONSOLE_ICONS = {
   'PS1': '🎮', 'PS2': '🎮', 'PS3': '🎮', 'PS4': '🎮', 'PS5': '🎮',
@@ -179,6 +182,63 @@ const CONSOLE_ICONS = {
   'NES': '🕹️', 'SNES': '🕹️', 'N64': '🕹️',
   'GAMECUBE': '🎯', 'WII': '🎯', 'WII U': '🎯', 'SWITCH': '🎯',
   'XBOX': '🎮', 'XBOX 360': '🎮', 'XBOX ONE': '🎮', 'XBOX SERIES X/S': '🎮'
+};
+
+const stripDiacritics = (value = '') =>
+  value.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+const normalizeGameTitle = (value = '') =>
+  stripDiacritics(value)
+    .toLowerCase()
+    .replace(/[™®©]/g, '')
+    .replace(/\b(game of the year|goty|definitive|deluxe|ultimate|collector'?s|limited|standard)\s+edition\b/g, '')
+    .replace(/\b(hd|remastered|remaster|remake)\b/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+
+const escapeIGDBString = (value = '') => value.replace(/\\/g, '\\\\').replace(/"/g, '\\"').trim();
+
+const getConsoleByName = (consoleName) => CONSOLES.find(c => c.name === consoleName);
+
+const mapIGDBPlatformToConsole = (platform) => {
+  if (!platform) return null;
+  const platformNames = [platform.name, platform.abbreviation].filter(Boolean).map(v => v.toLowerCase());
+  return CONSOLES.find(c =>
+    c.aliases.some(alias => platformNames.includes(alias.toLowerCase())) ||
+    platformNames.includes(c.name.toLowerCase()) ||
+    platformNames.includes(c.fullName.toLowerCase())
+  ) || null;
+};
+
+const igdbCoverUrl = (cover, size = 't_cover_big') =>
+  cover?.url ? `https:${cover.url.replace('t_thumb', size)}` : '';
+
+const tgdbCoverUrl = (gameId, include) => {
+  const baseImageUrl = include?.boxart?.base_url?.large || 'https://cdn.thegamesdb.net/images/original/';
+  const boxartArray = include?.boxart?.data?.[gameId] || [];
+  const frontBoxart = boxartArray.find(img => img.side === 'front');
+  return frontBoxart ? `${baseImageUrl}${frontBoxart.filename}` : '';
+};
+
+const sortByBestGameMatch = (results, title, consoleName = '') => {
+  const wantedTitle = normalizeGameTitle(title);
+  return [...results].sort((a, b) => {
+    const aTitle = normalizeGameTitle(a.game_title || a.title || a.name);
+    const bTitle = normalizeGameTitle(b.game_title || b.title || b.name);
+    const aConsole = !consoleName || a._consoleShortName === consoleName || a.console === consoleName;
+    const bConsole = !consoleName || b._consoleShortName === consoleName || b.console === consoleName;
+    const score = (itemTitle, consoleMatch, hasCover) =>
+      (itemTitle === wantedTitle ? 50 : itemTitle.includes(wantedTitle) || wantedTitle.includes(itemTitle) ? 20 : 0) +
+      (consoleMatch ? 10 : 0) +
+      (hasCover ? 5 : 0);
+    return score(bTitle, bConsole, !!b.cover_url) - score(aTitle, aConsole, !!a.cover_url);
+  });
+};
+
+const sanitizeGameForStorage = (game) => {
+  const cleanGame = { ...game };
+  delete cleanGame.barcode;
+  return cleanGame;
 };
 
   const LazyImage = React.memo(({ src, alt, className }) => {
@@ -298,25 +358,20 @@ function App() {
   const [filterVersion, setFilterVersion] = useState('');
   const [showAddModal, setShowAddModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
-  const [showBarcodeModal, setShowBarcodeModal] = useState(false);
-  const [barcodeInput, setBarcodeInput] = useState('');
   const [showSeriesModal, setShowSeriesModal] = useState(false);
   const [seriesQuery, setSeriesQuery] = useState('');
   const [seriesResults, setSeriesResults] = useState([]);
   const [isSearchingSeries, setIsSearchingSeries] = useState(false);
-  const [seriesPage, setSeriesPage] = useState(1);
-  const [seriesHasMore, setSeriesHasMore] = useState(false);
   const [seriesAddedIds, setSeriesAddedIds] = useState(new Set());
   const [seriesError, setSeriesError] = useState('');
   const [igdbCollections, setIgdbCollections] = useState([]);
   const [selectedCollection, setSelectedCollection] = useState(null);
   const [useIGDBSearch, setUseIGDBSearch] = useState(false);
-  const [isScanningBarcode, setIsScanningBarcode] = useState(false);
-  const [isUsingCamera, setIsUsingCamera] = useState(false);
+  const [apiSearchSource, setApiSearchSource] = useState(GAME_DATA_SOURCES.TGDB);
+  const [coverUpdateSource, setCoverUpdateSource] = useState(GAME_DATA_SOURCES.IGDB);
   const [isSearchingAPI, setIsSearchingAPI] = useState(false);
   const [apiSearchResults, setApiSearchResults] = useState([]);
   const csvInputRef = useRef(null);
-  const html5QrCodeRef = useRef(null);
   const [editingGame, setEditingGame] = useState(null);
   const [searchResults, setSearchResults] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
@@ -356,8 +411,7 @@ function App() {
     version: 'PAL',
     cover_url: '',
     release_date: '',
-    api_id: null,
-    barcode: ''
+    api_id: null
   });
 
   // Initialize user session
@@ -485,146 +539,92 @@ useEffect(() => {
   };
 
 const updateAllCovers = async () => {
-  // Count games without covers
   const gamesWithoutCovers = games.filter(g => !g.cover_url);
   const gamesWithCovers = games.filter(g => g.cover_url);
-  
+  const sourceLabel = coverUpdateSource === GAME_DATA_SOURCES.IGDB ? 'IGDB' : 'TheGamesDB';
+
   if (gamesWithoutCovers.length === 0) {
-    alert('✅ Tutti i giochi hanno già una copertina!');
+    alert('Tutti i giochi hanno gia una copertina!');
     return;
   }
-  
+
   if (!window.confirm(
-    `🖼️ AGGIORNAMENTO COPERTINE\n\n` +
+    `AGGIORNAMENTO COPERTINE\n\n` +
     `Giochi SENZA copertina: ${gamesWithoutCovers.length}\n` +
     `Giochi CON copertina: ${gamesWithCovers.length}\n` +
     `Totale: ${games.length}\n\n` +
+    `Database: ${sourceLabel}\n` +
     `Tempo stimato: ~${Math.ceil(gamesWithoutCovers.length * 2 / 60)} minuti\n\n` +
-    `⚠️ AUTO-SAVE VERRÀ DISABILITATO durante l'operazione.\n` +
-    `Il salvataggio avverrà solo alla fine.\n\n` +
+    `Auto-save disabilitato durante l'operazione.\n` +
+    `Il salvataggio avverra solo alla fine.\n\n` +
     `Continuare?`
   )) {
     return;
   }
 
-  // CRITICAL: Disable auto-save during batch operation
   setIsBatchOperation(true);
   setIsLoadingPrices(true);
-  
+
   let updated = 0;
   let skippedHasCover = 0;
-  let skippedNoConsole = 0;
   let skippedNotFound = 0;
   let errors = 0;
 
   try {
-    console.log(`🖼️ [UPDATE COVERS] Starting (auto-save DISABLED)`);
-    
-    // Work on a copy
     const updatedGames = [...games];
 
     for (let i = 0; i < updatedGames.length; i++) {
       const game = updatedGames[i];
-      
-      // SKIP: Already has cover
+
       if (game.cover_url) {
         skippedHasCover++;
         continue;
       }
 
       try {
-        const consoleObj = CONSOLES.find(c => c.name === game.console);
-        if (!consoleObj) {
-          skippedNoConsole++;
-          continue;
-        }
+        const results = coverUpdateSource === GAME_DATA_SOURCES.IGDB
+          ? await searchIGDBForCoverResults(game.title, game.console)
+          : await searchTGDBForCoverResults(game.title, game.console);
+        const bestResult = results.find(result => result.cover_url);
 
-        const params = new URLSearchParams({
-          name: game.title,
-          include: 'boxart',
-          platform: String(consoleObj.id)
-        });
-
-        const apiUrl = `${THEGAMESDB_BASE_URL}/Games/ByGameName?${params.toString()}`;
-        
-        console.log(`🔍 [${updated + 1}] ${game.title}`);
-        
-        const res = await fetch(apiUrl, { headers: { Accept: 'application/json' } });
-        
-        if (!res.ok) {
-          errors++;
-          await new Promise(resolve => setTimeout(resolve, 2000));
-          continue;
-        }
-
-        const txt = await res.text();
-        const data = JSON.parse(txt);
-
-        if (data.data?.games && data.data.games.length > 0) {
-          const foundGame = data.data.games[0];
-          const baseImageUrl = data.include?.boxart?.base_url?.large || 'https://cdn.thegamesdb.net/images/original/';
-          
-          let cover_url = '';
-          if (data.include?.boxart?.data && data.include.boxart.data[foundGame.id]) {
-            const boxartArray = data.include.boxart.data[foundGame.id];
-            const frontBoxart = boxartArray.find(img => img.side === 'front');
-            if (frontBoxart) {
-              cover_url = `${baseImageUrl}${frontBoxart.filename}`;
-            }
-          }
-
-          if (cover_url) {
-            updatedGames[i].cover_url = cover_url;
-            updated++;
-            console.log(`✅ [${updated}] ${game.title}`);
-          } else {
-            skippedNotFound++;
-          }
+        if (bestResult?.cover_url) {
+          updatedGames[i] = {
+            ...updatedGames[i],
+            cover_url: bestResult.cover_url,
+            release_date: game.release_date || bestResult.release_date || '',
+            api_id: game.api_id || bestResult.id || null
+          };
+          updated++;
         } else {
           skippedNotFound++;
         }
 
-        // Rate limiting
         await new Promise(resolve => setTimeout(resolve, 2000));
-
       } catch (error) {
-        console.error(`❌ Error for ${game.title}:`, error);
+        console.error(`Error updating cover for ${game.title}:`, error);
         errors++;
       }
     }
 
-    console.log('💾 [UPDATE COVERS] Saving to database...');
-    
-    // Update state ONCE
     setGames(updatedGames);
-    
-    // Wait a bit for React to update
     await new Promise(resolve => setTimeout(resolve, 500));
-    
-    // MANUAL SAVE (auto-save is disabled)
     await saveToSupabase(updatedGames, wishlist);
-    
-    console.log('✅ [UPDATE COVERS] Save completed');
 
     alert(
-      `✅ AGGIORNAMENTO COMPLETATO!\n\n` +
-      `📊 RISULTATI:\n` +
-      `✅ Copertine aggiunte: ${updated}\n` +
-      `⏭️ Già presente: ${skippedHasCover}\n` +
-      `⏭️ Non trovate: ${skippedNotFound}\n` +
-      `⏭️ Console sconosciuta: ${skippedNoConsole}\n` +
-      `❌ Errori API: ${errors}\n\n` +
-      `🖼️ Giochi con cover: ${updatedGames.filter(g => g.cover_url).length}/${updatedGames.length}`
+      `AGGIORNAMENTO COMPLETATO!\n\n` +
+      `Database: ${sourceLabel}\n` +
+      `Copertine aggiunte: ${updated}\n` +
+      `Gia presenti: ${skippedHasCover}\n` +
+      `Non trovate: ${skippedNotFound}\n` +
+      `Errori API: ${errors}\n\n` +
+      `Giochi con cover: ${updatedGames.filter(g => g.cover_url).length}/${updatedGames.length}`
     );
-
   } catch (error) {
-    console.error('❌ [UPDATE COVERS] Fatal error:', error);
-    alert('❌ Errore critico. Ricarica la pagina e verifica i dati.');
+    console.error('[UPDATE COVERS] Fatal error:', error);
+    alert('Errore critico. Ricarica la pagina e verifica i dati.');
   } finally {
-    // CRITICAL: Re-enable auto-save
     setIsBatchOperation(false);
     setIsLoadingPrices(false);
-    console.log('✅ [UPDATE COVERS] Auto-save RE-ENABLED');
   }
 };
 
@@ -1706,8 +1706,8 @@ const checkAchievements = useCallback(() => {
         setNotifiedBadges(userData.notified_badges);
       }
 
-      setGames(collectionData || []);
-      setWishlist(wishlistData || []);
+      setGames((collectionData || []).map(sanitizeGameForStorage));
+      setWishlist((wishlistData || []).map(sanitizeGameForStorage));
       setSyncStatus('synced');
     } catch (error) {
       console.error('Error loading from Supabase:', error);
@@ -1719,7 +1719,7 @@ const checkAchievements = useCallback(() => {
       
       if (savedGames) {
         try {
-          setGames(JSON.parse(savedGames));
+          setGames(JSON.parse(savedGames).map(sanitizeGameForStorage));
         } catch (e) {
           console.error('Error parsing saved games:', e);
         }
@@ -1727,7 +1727,7 @@ const checkAchievements = useCallback(() => {
       
       if (savedWishlist) {
         try {
-          setWishlist(JSON.parse(savedWishlist));
+          setWishlist(JSON.parse(savedWishlist).map(sanitizeGameForStorage));
         } catch (e) {
           console.error('Error parsing saved wishlist:', e);
         }
@@ -1917,13 +1917,13 @@ const saveToSupabase = useCallback(async (gamesData, wishlistData) => {
     // Prepare games for upsert
     const allGames = [
       ...gamesData.map(g => ({
-        ...g,
+        ...sanitizeGameForStorage(g),
         user_id: userId,
         is_wishlist: false,
         added_date: g.added_date || new Date().toISOString()
       })),
       ...wishlistData.map(g => ({
-        ...g,
+        ...sanitizeGameForStorage(g),
         user_id: userId,
         is_wishlist: true,
         added_date: g.added_date || new Date().toISOString()
@@ -2081,6 +2081,10 @@ useEffect(() => {
       setSearchResults([]);
       return;
     }
+    if (!THEGAMESDB_BASE_URL) {
+      alert('TheGamesDB non configurato. Controlla VITE_SUPABASE_TGDB.');
+      return;
+    }
 
     setIsSearching(true);
     try {
@@ -2102,19 +2106,7 @@ useEffect(() => {
       const data = JSON.parse(txt);
 
       if (data.data && data.data.games) {
-        const baseImageUrl = data.include?.boxart?.base_url?.large || 'https://cdn.thegamesdb.net/images/original/';
-        
         const gamesWithImages = data.data.games.map(game => {
-          let cover_url = '';
-          
-          if (data.include?.boxart?.data && data.include.boxart.data[game.id]) {
-            const boxartArray = data.include.boxart.data[game.id];
-            const frontBoxart = boxartArray.find(img => img.side === 'front');
-            if (frontBoxart) {
-              cover_url = `${baseImageUrl}${frontBoxart.filename}`;
-            }
-          }
-          
           let matchedConsole = CONSOLES.find(c => c.id === game.platform);
 
           // Debug: log platform ID to find correct mapping
@@ -2124,7 +2116,8 @@ useEffect(() => {
                     
           return {
             ...game,
-            cover_url,
+            cover_url: tgdbCoverUrl(game.id, data.include),
+            _source: GAME_DATA_SOURCES.TGDB,
             platformName: matchedConsole ? matchedConsole.fullName : 'Unknown Platform',
             uniqueKey: generateUniqueId()
           };
@@ -2144,32 +2137,49 @@ useEffect(() => {
   };
 
   const igdbQuery = async (endpoint, query) => {
-    const res = await fetch(IGDB_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ endpoint, query }),
-    });
-    if (!res.ok) throw new Error(`IGDB proxy ${res.status}`);
-    return res.json();
+    if (!IGDB_URL) throw new Error('VITE_SUPABASE_IGDB non configurata — aggiungi il secret su GitHub e fai redeploy');
+    const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+    let res;
+    try {
+      res = await fetch(IGDB_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${anonKey}`,
+          'apikey': anonKey,
+        },
+        body: JSON.stringify({ endpoint, query }),
+      });
+    } catch (networkErr) {
+      console.error('[IGDB] network error:', networkErr);
+      throw networkErr;
+    }
+    if (!res.ok) {
+      const errBody = await res.text().catch(() => '');
+      throw new Error(`IGDB proxy ${res.status}${errBody ? ': ' + errBody.slice(0, 300) : ''}`);
+    }
+    const data = await res.json();
+    if (!Array.isArray(data) && data?.status && data.status >= 400) {
+      throw new Error(`IGDB: ${data.message || data.title || JSON.stringify(data)}`);
+    }
+    return data;
   };
 
   const igdbSearchGames = async (query) => {
     if (!query || query.length < 2) { setSearchResults([]); return; }
     setIsSearching(true);
     try {
+      const safeQuery = escapeIGDBString(query);
       const games = await igdbQuery('games', `
-        search "${query.replace(/"/g, '')}";
-        fields name, first_release_date, platforms.abbreviation, platforms.name, cover.url;
-        where category = (0, 8, 9, 10, 11);
+        search "${safeQuery}";
+        fields name, first_release_date, platforms.abbreviation, platforms.name, cover.url, category;
         limit 100;
       `);
       if (!Array.isArray(games)) throw new Error(games?.error || 'IGDB error');
 
       const results = [];
       games.forEach(g => {
-        const coverUrl = g.cover?.url
-          ? `https:${g.cover.url.replace('t_thumb', 't_cover_big')}`
-          : '';
+        const coverUrl = igdbCoverUrl(g.cover);
         const releaseYear = g.first_release_date
           ? new Date(g.first_release_date * 1000).getFullYear().toString()
           : '';
@@ -2177,18 +2187,14 @@ useEffect(() => {
 
         platforms.forEach(p => {
           const consoleObj = p
-            ? CONSOLES.find(c =>
-                c.aliases.some(a =>
-                  a.toLowerCase() === (p.name || '').toLowerCase() ||
-                  a.toLowerCase() === (p.abbreviation || '').toLowerCase()
-                )
-              )
+            ? mapIGDBPlatformToConsole(p)
             : null;
           results.push({
             id: g.id,
             game_title: g.name,
             platform: consoleObj?.id ?? null,
             _consoleShortName: consoleObj?.name || '',
+            _source: GAME_DATA_SOURCES.IGDB,
             platformName: consoleObj?.fullName || p?.name || 'Unknown Platform',
             cover_url: coverUrl,
             release_date: releaseYear,
@@ -2217,56 +2223,83 @@ useEffect(() => {
     }
 
     try {
-      let targetCollectionId = collectionId;
+      // collectionId can encode both type and id: "col:123" or "fra:456"
+      let targetId = collectionId;
+      let targetType = null; // 'collection' | 'franchise'
+      if (collectionId) {
+        const [type, id] = collectionId.split(':');
+        targetType = type;
+        targetId = id;
+      }
 
-      if (!targetCollectionId) {
-        // Step 1: find matching collections
-        const collections = await igdbQuery('collections', `
-          search "${query.trim()}";
-          fields name, slug, games;
-          limit 10;
-        `);
-        if (collections.error) throw new Error(collections.error);
+      if (!targetId) {
+        // Step 1: search collections AND franchises in parallel
+        const q = query.trim();
+        const safeQ = escapeIGDBString(q);
+        const [collections, franchises] = await Promise.all([
+          igdbQuery('collections', `search "${safeQ}"; fields id, name, slug; limit 20;`).catch(() => []),
+          igdbQuery('franchises', `search "${safeQ}"; fields id, name, slug; limit 20;`).catch(() => []),
+        ]);
 
-        const filtered = (collections || []).filter(c =>
-          c.name.toLowerCase().includes(query.trim().toLowerCase())
-        );
+        // Bidirectional name match: query contains name OR name contains query
+        const qLow = q.toLowerCase();
+        const nameMatches = (name) => {
+          const n = name.toLowerCase();
+          return n.includes(qLow) || qLow.includes(n);
+        };
 
-        if (filtered.length === 0) {
-          // No collection found — fall back to direct game search
-          await searchIGDBByName(query.trim());
+        const matchedCols = (Array.isArray(collections) ? collections : [])
+          .filter(c => nameMatches(c.name))
+          .map(c => ({ ...c, _type: 'collection' }));
+        const matchedFras = (Array.isArray(franchises) ? franchises : [])
+          .filter(f => nameMatches(f.name))
+          .map(f => ({ ...f, _type: 'franchise' }));
+
+        const allMatches = [...matchedCols, ...matchedFras];
+
+        if (allMatches.length === 0) {
+          await searchIGDBByName(q);
           return;
         }
-        if (filtered.length === 1) {
-          targetCollectionId = filtered[0].id;
-          setSelectedCollection(filtered[0]);
+        if (allMatches.length === 1) {
+          targetType = allMatches[0]._type;
+          targetId = String(allMatches[0].id);
+          setSelectedCollection(allMatches[0]);
         } else {
-          // Multiple matches — let user pick
-          setIgdbCollections(filtered);
+          setIgdbCollections(allMatches);
           setIsSearchingSeries(false);
           return;
         }
       }
 
-      // Step 2: fetch all games in the collection (paginate with offset)
+      // Step 2: fetch all games (no category filter — filter client-side after)
       const allGames = [];
       let offset = 0;
-      while (true) {
-        const batch = await igdbQuery('games', `
-          fields name, first_release_date, platforms.abbreviation, platforms.name, cover.url, category;
-          where collection = ${targetCollectionId} & category = (0, 8, 9, 10, 11);
-          sort first_release_date asc;
-          limit 500;
-          offset ${offset};
-        `);
-        if (batch.error) throw new Error(batch.error);
-        if (!batch || batch.length === 0) break;
-        allGames.push(...batch);
-        if (batch.length < 500) break;
-        offset += 500;
+      const whereClauses = targetType === 'franchise'
+        ? [`franchise = ${targetId}`, `franchises = (${targetId})`]
+        : [`collection = ${targetId}`];
+
+      for (const whereClause of whereClauses) {
+        offset = 0;
+        while (true) {
+          const batch = await igdbQuery('games', `
+            fields name, first_release_date, platforms.abbreviation, platforms.name, cover.url, category;
+            where ${whereClause};
+            sort first_release_date asc;
+            limit 500;
+            offset ${offset};
+          `);
+          if (!Array.isArray(batch) || batch.length === 0) break;
+          allGames.push(...batch);
+          if (batch.length < 500) break;
+          offset += 500;
+        }
       }
 
-      setSeriesResults(processIGDBGames(allGames));
+      const uniqueGames = [...new Map(allGames.map(g => [g.id, g])).values()];
+      const EXCLUDED_CATEGORIES = new Set([1, 2, 3, 5, 6, 7, 13, 14]);
+      const filtered = uniqueGames.filter(g => !EXCLUDED_CATEGORIES.has(g.category));
+      setSeriesResults(processIGDBGames(filtered.length > 0 ? filtered : uniqueGames));
     } catch (e) {
       console.error('[SeriesTracker] IGDB error:', e);
       setSeriesError(`Errore IGDB: ${e.message}`);
@@ -2278,14 +2311,13 @@ useEffect(() => {
   const searchIGDBByName = async (query) => {
     try {
       const games = await igdbQuery('games', `
-        search "${query}";
+        search "${escapeIGDBString(query)}";
         fields name, first_release_date, platforms.abbreviation, platforms.name, cover.url, category;
-        where category = (0, 8, 9, 10, 11);
-        sort first_release_date asc;
         limit 500;
       `);
-      if (games.error) throw new Error(games.error);
-      setSeriesResults(processIGDBGames(games || []));
+      if (!Array.isArray(games)) throw new Error('IGDB error');
+      const EXCLUDED_CATEGORIES = new Set([1, 2, 3, 5, 6, 7, 13, 14]);
+      setSeriesResults(processIGDBGames((games || []).filter(g => !EXCLUDED_CATEGORIES.has(g.category))));
     } catch (e) {
       console.error('[SeriesTracker] IGDB name search error:', e);
       setSeriesError(`Errore IGDB: ${e.message}`);
@@ -2298,22 +2330,26 @@ useEffect(() => {
     // Group by normalised title, merge platforms, keep best cover
     const map = new Map();
     (games || []).forEach(g => {
-      const key = g.name.toLowerCase().trim();
-      const coverUrl = g.cover?.url
-        ? `https:${g.cover.url.replace('t_thumb', 't_cover_small')}`
-        : '';
+      const key = normalizeGameTitle(g.name);
+      const coverUrl = igdbCoverUrl(g.cover, 't_cover_small');
       const year = g.first_release_date
         ? new Date(g.first_release_date * 1000).getFullYear()
         : null;
+      const platformCandidates = (g.platforms || [])
+        .map(mapIGDBPlatformToConsole)
+        .filter(Boolean);
       const platNames = (g.platforms || [])
         .map(p => p.abbreviation || p.name)
         .filter(Boolean);
 
       if (!map.has(key)) {
-        map.set(key, { igdbId: g.id, title: g.name, cover_url: coverUrl, platforms: platNames, year });
+        map.set(key, { igdbId: g.id, title: g.name, cover_url: coverUrl, platforms: platNames, platformCandidates, year });
       } else {
         const entry = map.get(key);
         platNames.forEach(p => { if (!entry.platforms.includes(p)) entry.platforms.push(p); });
+        platformCandidates.forEach(p => {
+          if (!entry.platformCandidates.some(existing => existing.name === p.name)) entry.platformCandidates.push(p);
+        });
         if (!entry.cover_url && coverUrl) entry.cover_url = coverUrl;
         if (!entry.year && year) entry.year = year;
       }
@@ -2321,11 +2357,92 @@ useEffect(() => {
     return [...map.values()];
   };
 
-  const searchAPIForCover = async (title, consoleShortName) => {
+  const searchTGDBForCoverResults = async (title, consoleShortName) => {
+    if (!THEGAMESDB_BASE_URL) throw new Error('TheGamesDB non configurato');
+    const consoleObj = getConsoleByName(consoleShortName);
+    const params = new URLSearchParams({
+      name: title,
+      include: 'boxart'
+    });
+    if (consoleObj?.id) params.set('platform', String(consoleObj.id));
+
+    const apiUrl = `${THEGAMESDB_BASE_URL}/Games/ByGameName?${params}`;
+    const res = await fetch(apiUrl, { headers: { Accept: 'application/json' } });
+    const ctype = res.headers.get('content-type') || '';
+    const txt = await res.text();
+    if (!res.ok) throw new Error(`TGDB HTTP ${res.status}: ${txt.slice(0,150)}`);
+    if (!ctype.includes('application/json')) throw new Error('TGDB: risposta non-JSON');
+
+    const data = JSON.parse(txt);
+    const results = (data.data?.games || []).map(game => {
+      const matchedConsole = CONSOLES.find(c => c.id === game.platform);
+      return {
+        ...game,
+        cover_url: tgdbCoverUrl(game.id, data.include),
+        _consoleShortName: matchedConsole?.name || '',
+        _source: GAME_DATA_SOURCES.TGDB,
+        platformName: matchedConsole ? matchedConsole.fullName : 'Unknown Platform',
+        uniqueKey: generateUniqueId()
+      };
+    });
+
+    return sortByBestGameMatch(results, title, consoleShortName);
+  };
+
+  const searchIGDBForCoverResults = async (title, consoleShortName) => {
+    const safeTitle = escapeIGDBString(title);
+    const games = await igdbQuery('games', `
+      search "${safeTitle}";
+      fields name, first_release_date, platforms.abbreviation, platforms.name, cover.url, category;
+      limit 50;
+    `);
+    if (!Array.isArray(games)) throw new Error('IGDB error');
+
+    const wantedConsole = getConsoleByName(consoleShortName);
+    const results = [];
+    const EXCLUDED_CATEGORIES = new Set([1, 2, 3, 5, 6, 7, 13, 14]);
+    games.filter(g => !EXCLUDED_CATEGORIES.has(g.category)).forEach(g => {
+      const coverUrl = igdbCoverUrl(g.cover);
+      const releaseYear = g.first_release_date
+        ? new Date(g.first_release_date * 1000).getFullYear().toString()
+        : '';
+      const platforms = g.platforms?.length ? g.platforms : [null];
+
+      platforms.forEach(platform => {
+        const consoleObj = mapIGDBPlatformToConsole(platform);
+        if (wantedConsole && consoleObj && consoleObj.name !== wantedConsole.name) return;
+        results.push({
+          id: g.id,
+          game_title: g.name,
+          platform: consoleObj?.id ?? null,
+          _consoleShortName: consoleObj?.name || '',
+          _source: GAME_DATA_SOURCES.IGDB,
+          platformName: consoleObj?.fullName || platform?.name || 'Unknown Platform',
+          cover_url: coverUrl,
+          release_date: releaseYear,
+          uniqueKey: generateUniqueId()
+        });
+      });
+    });
+
+    return sortByBestGameMatch(results, title, consoleShortName);
+  };
+
+  const searchAPIForCover = async (title, consoleShortName, source = apiSearchSource) => {
     setIsSearchingAPI(true);
     setApiSearchResults([]);
     
     try {
+      if (source === GAME_DATA_SOURCES.IGDB) {
+        const results = await searchIGDBForCoverResults(title, consoleShortName);
+        setApiSearchResults(results);
+        if (results.length === 0) {
+          alert('Nessun risultato trovato su IGDB. Prova a modificare il titolo o rimuovere il filtro console.');
+        }
+        return;
+      }
+
+      if (!THEGAMESDB_BASE_URL) throw new Error('TheGamesDB non configurato');
       const consoleObj = CONSOLES.find(c => c.name === consoleShortName);
       const params = new URLSearchParams({
         name: title,
@@ -2344,19 +2461,7 @@ useEffect(() => {
       const data = JSON.parse(txt);
 
       if (data.data && data.data.games && data.data.games.length > 0) {
-        const baseImageUrl = data.include?.boxart?.base_url?.large || 'https://cdn.thegamesdb.net/images/original/';
-        
         const gamesWithImages = data.data.games.map(game => {
-          let cover_url = '';
-          
-          if (data.include?.boxart?.data && data.include.boxart.data[game.id]) {
-            const boxartArray = data.include.boxart.data[game.id];
-            const frontBoxart = boxartArray.find(img => img.side === 'front');
-            if (frontBoxart) {
-              cover_url = `${baseImageUrl}${frontBoxart.filename}`;
-            }
-          }
-          
           let matchedConsole = CONSOLES.find(c => c.id === game.platform);
 
           // Debug: log platform ID to find correct mapping
@@ -2366,13 +2471,15 @@ useEffect(() => {
 
           return {
             ...game,
-            cover_url,
+            cover_url: tgdbCoverUrl(game.id, data.include),
+            _consoleShortName: matchedConsole?.name || '',
+            _source: GAME_DATA_SOURCES.TGDB,
             platformName: matchedConsole ? matchedConsole.fullName : 'Unknown Platform',
             uniqueKey: generateUniqueId()
           };
         });
         
-        setApiSearchResults(gamesWithImages);
+        setApiSearchResults(sortByBestGameMatch(gamesWithImages, title, consoleShortName));
         
         if (gamesWithImages.length === 0) {
           alert('Nessun risultato trovato su TheGamesDB. Prova a modificare il titolo o rimuovi il filtro console.');
@@ -2401,153 +2508,6 @@ useEffect(() => {
     setApiSearchResults([]);
   };
 
-  // Improved barcode search with TGDB fallback
-  const searchByBarcode = async (barcode) => {
-    setIsScanningBarcode(true);
-    try {
-      // First try UPC lookup
-      const response = await fetch(`${SERVER_API}?upc=${barcode}`);
-      const data = await response.json();
-
-      let gameTitle = null;
-      let detectedConsole = '';
-
-      if (data.items && data.items.length > 0) {
-        const item = data.items[0];
-        gameTitle = item.title;
-        
-        const searchText = (gameTitle + ' ' + (item.description || '')).toLowerCase();
-        
-        for (const console of CONSOLES) {
-          for (const alias of console.aliases) {
-            if (searchText.includes(alias.toLowerCase())) {
-              detectedConsole = console.name;
-              break;
-            }
-          }
-          if (detectedConsole) break;
-        }
-      } else {
-        // UPC not found - try to extract game info from barcode patterns
-        // Many game barcodes have patterns we can use
-        alert('Barcode non trovato nel database UPC.\n\nInserisci manualmente il titolo del gioco per cercarlo.');
-        setShowBarcodeModal(false);
-        setShowAddModal(true);
-        return;
-      }
-
-      if (gameTitle) {
-        if (detectedConsole) {
-          const consoleObj = CONSOLES.find(c => c.name === detectedConsole);
-          await searchGames(gameTitle, consoleObj?.id);
-        } else {
-          await searchGames(gameTitle);
-        }
-
-        setShowBarcodeModal(false);
-        setBarcodeInput('');
-        setShowAddModal(true);
-      } else {
-        alert('Impossibile identificare il gioco da questo barcode. Prova la ricerca manuale.');
-      }
-    } catch (error) {
-      console.error('Error scanning barcode:', error);
-      alert('Errore durante la scansione del barcode. Prova la ricerca manuale.');
-      setShowBarcodeModal(false);
-      setShowAddModal(true);
-    } finally {
-      setIsScanningBarcode(false);
-      stopCamera();
-    }
-  };
-
-  const startCamera = () => {
-    setIsUsingCamera(true);
-    
-    setTimeout(async () => {
-      try {
-        if (window.Html5Qrcode) {
-          initializeScanner();
-        } else {
-          const script = document.createElement('script');
-          script.src = 'https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js';
-          script.async = false;
-          
-          script.onload = () => {
-            console.log('html5-qrcode library loaded');
-            initializeScanner();
-          };
-          
-          script.onerror = () => {
-            console.error('Failed to load html5-qrcode library');
-            alert('Errore nel caricamento dello scanner. Inserisci il barcode manualmente.');
-            setIsUsingCamera(false);
-          };
-          
-          document.head.appendChild(script);
-        }
-      } catch (error) {
-        console.error('Error in startCamera:', error);
-        alert('Errore nell\'inizializzazione della fotocamera.');
-        setIsUsingCamera(false);
-      }
-    }, 100);
-  };
-
-  const initializeScanner = async () => {
-    try {
-      const Html5Qrcode = window.Html5Qrcode;
-      
-      if (!Html5Qrcode) {
-        throw new Error('Html5Qrcode not available');
-      }
-
-      const html5QrCode = new Html5Qrcode("barcode-reader");
-      html5QrCodeRef.current = html5QrCode;
-      
-      const qrCodeSuccessCallback = (decodedText) => {
-        console.log('Barcode detected:', decodedText);
-        setBarcodeInput(decodedText);
-        stopCamera();
-        searchByBarcode(decodedText);
-      };
-      
-      const config = {
-        fps: 10,
-        qrbox: { width: 250, height: 150 }
-      };
-      
-      await html5QrCode.start(
-        { facingMode: "environment" },
-        config,
-        qrCodeSuccessCallback,
-        (errorMessage) => {
-          // Ignore continuous scanning errors
-        }
-      );
-      
-      console.log('Scanner started successfully');
-    } catch (err) {
-      console.error('Error initializing scanner:', err);
-      alert('Impossibile accedere alla fotocamera. Verifica i permessi nel browser e riprova.');
-      setIsUsingCamera(false);
-    }
-  };
-
-  const stopCamera = async () => {
-    if (html5QrCodeRef.current) {
-      try {
-        await html5QrCodeRef.current.stop();
-        html5QrCodeRef.current.clear();
-        html5QrCodeRef.current = null;
-        console.log('Scanner stopped');
-      } catch (error) {
-        console.error('Error stopping camera:', error);
-      }
-    }
-    setIsUsingCamera(false);
-  };
-
   const selectGameFromSearch = (game) => {
     // _consoleShortName is pre-resolved for IGDB results; fall back to TGDB platform ID lookup
     const consoleName = game._consoleShortName ||
@@ -2559,8 +2519,7 @@ useEffect(() => {
       version: 'PAL',
       cover_url: game.cover_url || '',
       release_date: game.release_date || '',
-      api_id: game.id,
-      barcode: ''
+      api_id: game.id
     });
     setSearchResults([]);
   };
@@ -2610,8 +2569,7 @@ const addGame = () => {
     version: 'PAL',
     cover_url: '',
     release_date: '',
-    api_id: null,
-    barcode: ''
+    api_id: null
   });
   setSearchResults([]);
   setAddToWishlist(false);
@@ -2639,10 +2597,12 @@ const addGame = () => {
       return;
     }
 
+    const cleanEditingGame = sanitizeGameForStorage(editingGame);
+
     if (editingGame.is_wishlist) {
-      setWishlist(wishlist.map(g => g.id === editingGame.id ? editingGame : g));
+      setWishlist(wishlist.map(g => g.id === editingGame.id ? cleanEditingGame : g));
     } else {
-      setGames(games.map(g => g.id === editingGame.id ? editingGame : g));
+      setGames(games.map(g => g.id === editingGame.id ? cleanEditingGame : g));
     }
 
     setShowEditModal(false);
@@ -2710,8 +2670,7 @@ const addGame = () => {
             version: fields[2],
             cover_url: '',
             release_date: '',
-            api_id: null,
-            barcode: ''
+            api_id: null
           });
         }
       }
@@ -2964,13 +2923,6 @@ const addGame = () => {
                 <LogOut className="w-3 h-3 sm:w-4 sm:h-4" />
               </button>
               <button
-                onClick={() => setShowBarcodeModal(true)}
-                className="px-3 py-2 sm:px-4 sm:py-2 bg-blue-600 text-white rounded-sm hover:bg-blue-700 transition-all font-bold border-4 border-blue-500 hover:border-blue-400 shadow-lg flex items-center gap-2 font-mono text-xs sm:text-sm"
-              >
-                <Camera className="w-3 h-3 sm:w-4 sm:h-4" />
-                <span className="hidden sm:inline">SCAN</span>
-              </button>
-              <button
                 onClick={() => {
                   setShowAddModal(true);
                   setAddToWishlist(activeTab === 'wishlist');
@@ -3001,6 +2953,15 @@ const addGame = () => {
                 onChange={importCSV}
                 className="hidden"
               />
+              <select
+                value={coverUpdateSource}
+                onChange={(e) => setCoverUpdateSource(e.target.value)}
+                className="px-2 py-2 bg-slate-700 text-white rounded-sm border-4 border-slate-600 font-mono text-xs"
+                title="Database per update covers"
+              >
+                <option value={GAME_DATA_SOURCES.IGDB}>IGDB</option>
+                <option value={GAME_DATA_SOURCES.TGDB}>TGDB</option>
+              </select>
               <button
                 onClick={updateAllCovers}
                 disabled={isLoadingPrices || games.length === 0}
@@ -3014,9 +2975,10 @@ const addGame = () => {
                   setShowSeriesModal(true);
                   setSeriesQuery('');
                   setSeriesResults([]);
-                  setSeriesHasMore(false);
                   setSeriesAddedIds(new Set());
                   setSeriesError('');
+                  setIgdbCollections([]);
+                  setSelectedCollection(null);
                 }}
                 className="px-3 py-2 bg-teal-600 text-white rounded-sm hover:bg-teal-700 transition-all font-bold border-4 border-teal-500 font-mono text-xs flex items-center gap-1"
                 title="Series Tracker - verifica i titoli mancanti"
@@ -3699,8 +3661,7 @@ const addGame = () => {
                       version: 'PAL',
                       cover_url: '',
                       release_date: '',
-                      api_id: null,
-                      barcode: ''
+                      api_id: null
                     });
                     setSearchResults([]);
                     setAddToWishlist(false);
@@ -3870,18 +3831,6 @@ const addGame = () => {
                     />
                   </div>
 
-                  <div>
-                    <label className="block text-amber-400 text-sm font-semibold mb-2 font-mono">
-                      Barcode
-                    </label>
-                    <input
-                      type="text"
-                      value={newGame.barcode}
-                      onChange={(e) => setNewGame({ ...newGame, barcode: e.target.value })}
-                      className="w-full px-3 sm:px-4 py-2 bg-slate-700 text-white rounded-sm border-2 border-slate-600 focus:outline-none focus:border-amber-500 font-mono text-sm"
-                      placeholder="Es: 045496730130"
-                    />
-                  </div>
                 </div>
 
                 {newGame.cover_url && (
@@ -3911,8 +3860,7 @@ const addGame = () => {
                         version: 'PAL',
                         cover_url: '',
                         release_date: '',
-                        api_id: null,
-                        barcode: ''
+                        api_id: null
                       });
                       setSearchResults([]);
                       setAddToWishlist(false);
@@ -3948,19 +3896,32 @@ const addGame = () => {
                 </div>
 
                 <div className="mb-4 sm:mb-6 bg-slate-700 p-3 sm:p-4 rounded-sm border-2 border-slate-600">
-                  <div className="flex items-center justify-between mb-2">
-                    <p className="text-amber-400 text-sm font-mono font-semibold">🔍 FIND COVER FROM API</p>
-                    <button
-                      onClick={() => searchAPIForCover(editingGame.title, editingGame.console)}
-                      disabled={!editingGame.title || !editingGame.console || isSearchingAPI}
-                      className="px-3 sm:px-4 py-1.5 sm:py-2 bg-blue-600 text-white rounded-sm hover:bg-blue-700 transition-all font-bold border-2 border-blue-500 font-mono text-xs sm:text-sm disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-                    >
-                      <RefreshCw className={`w-3 h-3 sm:w-4 sm:h-4 ${isSearchingAPI ? 'animate-spin' : ''}`} />
-                      {isSearchingAPI ? 'SEARCHING...' : 'SEARCH API'}
-                    </button>
+                  <div className="flex items-center justify-between mb-2 gap-2">
+                    <p className="text-amber-400 text-sm font-mono font-semibold">FIND COVER FROM API</p>
+                    <div className="flex items-center gap-2">
+                      <select
+                        value={apiSearchSource}
+                        onChange={(e) => {
+                          setApiSearchSource(e.target.value);
+                          setApiSearchResults([]);
+                        }}
+                        className="px-2 py-1.5 bg-slate-800 text-white rounded-sm border-2 border-slate-600 font-mono text-xs"
+                      >
+                        <option value={GAME_DATA_SOURCES.IGDB}>IGDB</option>
+                        <option value={GAME_DATA_SOURCES.TGDB}>TGDB</option>
+                      </select>
+                      <button
+                        onClick={() => searchAPIForCover(editingGame.title, editingGame.console, apiSearchSource)}
+                        disabled={!editingGame.title || !editingGame.console || isSearchingAPI}
+                        className="px-3 sm:px-4 py-1.5 sm:py-2 bg-blue-600 text-white rounded-sm hover:bg-blue-700 transition-all font-bold border-2 border-blue-500 font-mono text-xs sm:text-sm disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                      >
+                        <RefreshCw className={`w-3 h-3 sm:w-4 sm:h-4 ${isSearchingAPI ? 'animate-spin' : ''}`} />
+                        {isSearchingAPI ? 'SEARCHING...' : 'SEARCH API'}
+                      </button>
+                    </div>
                   </div>
                   <p className="text-slate-400 text-xs font-mono">
-                    Cerca copertine e info su TheGamesDB per questo gioco
+                    Cerca copertine e info su {apiSearchSource === GAME_DATA_SOURCES.IGDB ? 'IGDB' : 'TheGamesDB'} per questo gioco
                   </p>
                 </div>
 
@@ -4051,18 +4012,6 @@ const addGame = () => {
                     />
                   </div>
 
-                  <div>
-                    <label className="block text-amber-400 text-sm font-semibold mb-2 font-mono">
-                      Barcode
-                    </label>
-                    <input
-                      type="text"
-                      value={editingGame.barcode || ''}
-                      onChange={(e) => setEditingGame({ ...editingGame, barcode: e.target.value })}
-                      className="w-full px-3 sm:px-4 py-2 bg-slate-700 text-white rounded-sm border-2 border-slate-600 focus:outline-none focus:border-amber-500 font-mono text-sm"
-                      placeholder="Es: 045496730130"
-                    />
-                  </div>
                 </div>
 
                 {editingGame.cover_url && (
@@ -4098,285 +4047,6 @@ const addGame = () => {
             </div>
           </div>
         )}
-
-        {/* Barcode Scanner Modal */}
-        {showBarcodeModal && (
-          <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center p-4 z-50">
-            <div className="bg-slate-800 rounded-sm max-w-md w-full border-4 border-slate-600 shadow-2xl relative">
-              <div className="absolute top-0 left-0 right-0 h-3 sm:h-4 bg-slate-900 rounded-t-sm"></div>
-              <div className="p-4 sm:p-6 pt-6 sm:pt-8">
-                <div className="flex justify-between items-center mb-4 sm:mb-6">
-                  <h2 className="text-xl sm:text-2xl font-bold text-white flex items-center gap-2 font-mono">
-                    <Camera className="w-5 h-5 sm:w-6 sm:h-6" />
-                    BARCODE SCAN
-                  </h2>
-                  <button onClick={() => {
-                    setShowBarcodeModal(false);
-                    setBarcodeInput('');
-                    stopCamera();
-                  }} className="text-slate-400 hover:text-white">
-                    <X className="w-5 h-5 sm:w-6 sm:h-6" />
-                  </button>
-                </div>
-
-                <div className="space-y-4">
-                  {!isUsingCamera ? (
-                    <>
-                      <div className="bg-slate-700 rounded-sm p-4 sm:p-6 border-2 border-slate-600 text-center">
-                        <Camera className="w-12 h-12 sm:w-16 sm:h-16 text-blue-400 mx-auto mb-4" />
-                        <p className="text-white mb-2 font-mono text-sm sm:text-base">INSERISCI BARCODE/UPC</p>
-                        <p className="text-slate-400 text-xs sm:text-sm mb-4 font-mono">
-                          Inserisci il codice manualmente o usa la fotocamera
-                        </p>
-                        
-                        <input
-                          type="text"
-                          value={barcodeInput}
-                          onChange={(e) => setBarcodeInput(e.target.value)}
-                          placeholder="Es: 045496730130"
-                          className="w-full px-3 sm:px-4 py-2 sm:py-3 bg-slate-800 text-white rounded-sm border-2 border-slate-600 focus:outline-none focus:border-slate-500 text-center font-mono text-base sm:text-lg mb-4"
-                          onKeyPress={(e) => {
-                            if (e.key === 'Enter' && barcodeInput) {
-                              searchByBarcode(barcodeInput);
-                            }
-                          }}
-                        />
-
-                        <div className="flex flex-col sm:flex-row gap-2">
-                          <button
-                            onClick={() => barcodeInput && searchByBarcode(barcodeInput)}
-                            disabled={!barcodeInput || isScanningBarcode}
-                            className="flex-1 px-4 sm:px-6 py-2 sm:py-3 bg-slate-700 text-white rounded-sm hover:bg-slate-600 transition-all font-bold border-4 border-slate-600 hover:border-slate-500 font-mono disabled:opacity-50 disabled:cursor-not-allowed text-sm"
-                          >
-                            {isScanningBarcode ? '⏳ RICERCA...' : '🔍 CERCA'}
-                          </button>
-                          <button
-                            onClick={startCamera}
-                            className="flex-1 px-4 sm:px-6 py-2 sm:py-3 bg-blue-600 text-white rounded-sm hover:bg-blue-700 transition-all font-bold border-4 border-blue-500 font-mono text-sm"
-                          >
-                            📷 USA CAMERA
-                          </button>
-                        </div>
-                      </div>
-
-                      <div className="bg-slate-700 rounded-sm p-3 sm:p-4 border-2 border-slate-600">
-                        <p className="text-slate-300 text-xs sm:text-sm font-mono mb-2">💡 SUGGERIMENTI:</p>
-                        <ul className="text-slate-400 text-xs space-y-1 font-mono">
-                          <li>• Il barcode si trova sul retro della confezione</li>
-                          <li>• Formato: codice a 12-13 cifre (UPC/EAN)</li>
-                          <li>• Usa uno scanner USB o la fotocamera</li>
-                        </ul>
-                      </div>
-                    </>
-                  ) : (
-                    <div className="bg-slate-700 rounded-sm p-4 border-2 border-slate-600">
-                      <div id="barcode-reader" className="w-full rounded-sm mb-4"></div>
-                      <p className="text-white text-center font-mono text-sm mb-4">
-                        Inquadra il barcode con la fotocamera
-                      </p>
-                      <button
-                        onClick={stopCamera}
-                        className="w-full px-6 py-3 bg-red-600 text-white rounded-sm hover:bg-red-700 transition-all font-bold border-4 border-red-500 font-mono"
-                      >
-                        CHIUDI CAMERA
-                      </button>
-                    </div>
-                  )}
-                </div>
-
-                {!isUsingCamera && (
-                  <button
-                    onClick={() => {
-                      setShowBarcodeModal(false);
-                      setBarcodeInput('');
-                    }}
-                    className="w-full mt-4 sm:mt-6 px-4 sm:px-6 py-2 sm:py-3 bg-slate-900 text-slate-400 rounded-sm hover:bg-slate-800 transition-colors border-4 border-slate-700 font-mono text-sm"
-                  >
-                    CHIUDI
-                  </button>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Add Anime Modal */}
-        {showAddAnimeModal && (
-          <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center p-4 z-50 overflow-y-auto">
-            <div className="bg-slate-800 rounded-sm max-w-4xl w-full border-4 border-pink-600 shadow-2xl my-8 relative max-h-[90vh] overflow-y-auto">
-              <div className="absolute top-0 left-0 right-0 h-3 sm:h-4 bg-slate-900 rounded-t-sm"></div>
-              <div className="p-4 sm:p-6 pt-6 sm:pt-8">
-                <div className="flex justify-between items-center mb-4 sm:mb-6">
-                  <h2 className="text-xl sm:text-2xl font-bold text-white flex items-center gap-2 font-mono">
-                    <Plus className="w-5 h-5 sm:w-6 sm:h-6" />
-                    ADD ANIME
-                  </h2>
-                  <button
-                    onClick={() => {
-                      setShowAddAnimeModal(false);
-                      setAnimeSearchQuery('');
-                      setAnimeSearchResults([]);
-                    }}
-                    className="p-2 hover:bg-slate-700 rounded transition-colors"
-                  >
-                    <X className="w-5 h-5 sm:w-6 sm:h-6" />
-                  </button>
-                </div>
-
-                <div className="mb-4 sm:mb-6">
-                  <label className="block text-pink-400 text-sm font-semibold mb-2 font-mono">
-                    🔍 SEARCH ON ANILIST
-                  </label>
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      value={animeSearchQuery}
-                      onChange={(e) => setAnimeSearchQuery(e.target.value)}
-                      onKeyPress={(e) => e.key === 'Enter' && handleSearchAnime()}
-                      placeholder="Search anime... (e.g., Attack on Titan)"
-                      className="flex-1 px-3 sm:px-4 py-2 bg-slate-700 text-white rounded-sm border-2 border-slate-600 focus:outline-none focus:border-pink-500 font-mono text-sm"
-                    />
-                    <button
-                      onClick={handleSearchAnime}
-                      disabled={isSearchingAnime || !animeSearchQuery}
-                      className="px-4 sm:px-6 py-2 bg-pink-600 text-white rounded-sm hover:bg-pink-700 transition-all font-bold border-4 border-pink-500 font-mono text-sm disabled:opacity-50 flex items-center gap-2"
-                    >
-                      <Search className={`w-4 h-4 ${isSearchingAnime ? 'animate-spin' : ''}`} />
-                      {isSearchingAnime ? 'SEARCHING...' : 'SEARCH'}
-                    </button>
-                  </div>
-                </div>
-
-                {animeSearchResults.length > 0 && (
-                  <div className="mb-4 sm:mb-6 max-h-96 overflow-y-auto bg-slate-700 rounded-sm border-2 border-pink-600">
-                    <p className="text-pink-400 text-sm font-mono font-semibold p-3 border-b border-pink-600">
-                      SELECT AN ANIME:
-                    </p>
-                    {animeSearchResults.map(anime => (
-                      <button
-                        key={anime.id}
-                        onClick={() => addAnimeFromSearch(anime)}
-                        className="w-full p-3 hover:bg-slate-600 transition-colors text-left flex items-center gap-3 border-b border-slate-600 last:border-0"
-                      >
-                        {anime.coverImage?.large ? (
-                          <LazyImage src={anime.coverImage.large} alt={anime.title.romaji} className="w-10 h-14 sm:w-12 sm:h-16 object-cover rounded" />
-                        ) : (
-                          <div className="w-10 h-14 sm:w-12 sm:h-16 bg-slate-800 rounded flex items-center justify-center">
-                            <Star className="w-5 h-5 sm:w-6 sm:h-6 text-pink-600" />
-                          </div>
-                        )}
-                        <div className="flex-1 min-w-0">
-                          <p className="font-bold text-white truncate font-mono text-sm">
-                            {anime.title.english || anime.title.romaji}
-                          </p>
-                          <p className="text-xs sm:text-sm text-slate-400 font-mono">
-                            {anime.format} • {anime.episodes ? `${anime.episodes} eps` : 'Ongoing'}
-                          </p>
-                          {anime.seasonYear && (
-                            <p className="text-xs text-slate-500 font-mono">{anime.seasonYear}</p>
-                          )}
-                          {anime.genres && anime.genres.length > 0 && (
-                            <p className="text-xs text-pink-400 font-mono">{anime.genres.slice(0, 3).join(', ')}</p>
-                          )}
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Add Manga Modal */}
-        {showAddMangaModal && (
-          <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center p-4 z-50 overflow-y-auto">
-            <div className="bg-slate-800 rounded-sm max-w-4xl w-full border-4 border-blue-600 shadow-2xl my-8 relative max-h-[90vh] overflow-y-auto">
-              <div className="absolute top-0 left-0 right-0 h-3 sm:h-4 bg-slate-900 rounded-t-sm"></div>
-              <div className="p-4 sm:p-6 pt-6 sm:pt-8">
-                <div className="flex justify-between items-center mb-4 sm:mb-6">
-                  <h2 className="text-xl sm:text-2xl font-bold text-white flex items-center gap-2 font-mono">
-                    <Plus className="w-5 h-5 sm:w-6 sm:h-6" />
-                    ADD MANGA
-                  </h2>
-                  <button
-                    onClick={() => {
-                      setShowAddMangaModal(false);
-                      setMangaSearchQuery('');
-                      setMangaSearchResults([]);
-                    }}
-                    className="p-2 hover:bg-slate-700 rounded transition-colors"
-                  >
-                    <X className="w-5 h-5 sm:w-6 sm:h-6" />
-                  </button>
-                </div>
-
-                <div className="mb-4 sm:mb-6">
-                  <label className="block text-blue-400 text-sm font-semibold mb-2 font-mono">
-                    🔍 SEARCH ON ANILIST
-                  </label>
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      value={mangaSearchQuery}
-                      onChange={(e) => setMangaSearchQuery(e.target.value)}
-                      onKeyPress={(e) => e.key === 'Enter' && handleSearchManga()}
-                      placeholder="Search manga... (e.g., One Piece)"
-                      className="flex-1 px-3 sm:px-4 py-2 bg-slate-700 text-white rounded-sm border-2 border-slate-600 focus:outline-none focus:border-blue-500 font-mono text-sm"
-                    />
-                    <button
-                      onClick={handleSearchManga}
-                      disabled={isSearchingManga || !mangaSearchQuery}
-                      className="px-4 sm:px-6 py-2 bg-blue-600 text-white rounded-sm hover:bg-blue-700 transition-all font-bold border-4 border-blue-500 font-mono text-sm disabled:opacity-50 flex items-center gap-2"
-                    >
-                      <Search className={`w-4 h-4 ${isSearchingManga ? 'animate-spin' : ''}`} />
-                      {isSearchingManga ? 'SEARCHING...' : 'SEARCH'}
-                    </button>
-                  </div>
-                </div>
-
-                {mangaSearchResults.length > 0 && (
-                  <div className="mb-4 sm:mb-6 max-h-96 overflow-y-auto bg-slate-700 rounded-sm border-2 border-blue-600">
-                    <p className="text-blue-400 text-sm font-mono font-semibold p-3 border-b border-blue-600">
-                      SELECT A MANGA:
-                    </p>
-                    {mangaSearchResults.map(manga => (
-                      <button
-                        key={manga.id}
-                        onClick={() => addMangaFromSearch(manga)}
-                        className="w-full p-3 hover:bg-slate-600 transition-colors text-left flex items-center gap-3 border-b border-slate-600 last:border-0"
-                      >
-                        {manga.coverImage?.large ? (
-                          <LazyImage src={manga.coverImage.large} alt={manga.title.romaji} className="w-10 h-14 sm:w-12 sm:h-16 object-cover rounded" />
-                        ) : (
-                          <div className="w-10 h-14 sm:w-12 sm:h-16 bg-slate-800 rounded flex items-center justify-center">
-                            <TrendingUp className="w-5 h-5 sm:w-6 sm:h-6 text-blue-600" />
-                          </div>
-                        )}
-                        <div className="flex-1 min-w-0">
-                          <p className="font-bold text-white truncate font-mono text-sm">
-                            {manga.title.english || manga.title.romaji}
-                          </p>
-                          <p className="text-xs sm:text-sm text-slate-400 font-mono">
-                            {manga.format} • {manga.volumes ? `${manga.volumes} volumes` : 'Ongoing'}
-                          </p>
-                          {manga.startDate?.year && (
-                            <p className="text-xs text-slate-500 font-mono">{manga.startDate.year}</p>
-                          )}
-                          {manga.genres && manga.genres.length > 0 && (
-                            <p className="text-xs text-blue-400 font-mono">{manga.genres.slice(0, 3).join(', ')}</p>
-                          )}
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
-
         {/* Anime Details Modal */}
         {showAnimeDetails && (
           <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center p-4 z-50 overflow-y-auto">
@@ -4793,11 +4463,11 @@ const addGame = () => {
 
       {/* Series Tracker Modal */}
       {showSeriesModal && (() => {
-        const normalize = (s) => s.toLowerCase().trim();
+        const normalize = (s) => normalizeGameTitle(s);
         const baseTitle = (s) => normalize(s).replace(/\s*[:\-–([].*/u, '').trim();
         const titleMatches = (a, b) => {
           const na = normalize(a), nb = normalize(b);
-          return na === nb || na.startsWith(nb) || nb.startsWith(na) || baseTitle(a) === baseTitle(b);
+          return na === nb || (baseTitle(a).length >= 6 && baseTitle(a) === baseTitle(b));
         };
         const isOwned = (title) => games.some(g => titleMatches(title, g.title));
         const isWishlisted = (title) => !isOwned(title) && wishlist.some(g => titleMatches(title, g.title));
@@ -4807,12 +4477,11 @@ const addGame = () => {
             id: generateUniqueId(),
             user_id: userId,
             title: item.title,
-            console: '',
+            console: item.platformCandidates?.[0]?.name || '',
             version: 'PAL',
             cover_url: item.cover_url,
             release_date: item.year ? String(item.year) : '',
             api_id: item.igdbId || null,
-            barcode: '',
             is_wishlist: true,
             added_date: new Date().toISOString()
           };
@@ -4929,22 +4598,24 @@ const addGame = () => {
                   )}
                 </div>
 
-                {/* Collection picker — shown when IGDB returns multiple matches */}
-                {igdbCollections.length > 1 && (
+                {/* Collection/franchise picker — shown when IGDB returns multiple matches */}
+                {igdbCollections.length > 0 && (
                   <div className="mt-3 space-y-1">
                     <p className="text-slate-400 font-mono text-xs">Più serie trovate — scegli:</p>
                     {igdbCollections.map(col => (
                       <button
-                        key={col.id}
+                        key={`${col._type}-${col.id}`}
                         onClick={() => {
                           setSelectedCollection(col);
                           setIgdbCollections([]);
-                          searchSeriesGames(seriesQuery, col.id);
+                          searchSeriesGames(seriesQuery, `${col._type}:${col.id}`);
                         }}
                         className="w-full text-left px-3 py-2 bg-slate-700 hover:bg-teal-700 text-white rounded-sm border border-slate-600 hover:border-teal-500 font-mono text-sm transition-colors"
                       >
                         {col.name}
-                        <span className="text-slate-400 text-xs ml-2">({col.games?.length ?? '?'} titoli)</span>
+                        <span className="text-slate-500 text-xs ml-2">
+                          {col._type === 'franchise' ? '[franchise]' : '[collection]'}
+                        </span>
                       </button>
                     ))}
                   </div>
@@ -4953,6 +4624,9 @@ const addGame = () => {
                 {selectedCollection && seriesResults.length > 0 && (
                   <p className="mt-2 text-teal-400 font-mono text-xs">
                     Serie: <span className="font-bold">{selectedCollection.name}</span>
+                    {selectedCollection._type && (
+                      <span className="text-slate-500 ml-1">({selectedCollection._type})</span>
+                    )}
                   </p>
                 )}
 
@@ -5041,10 +4715,11 @@ const addGame = () => {
           <div className="text-center border-t border-slate-800 pt-2 sm:pt-3">
             <p className="text-slate-600 font-mono text-xs">
               Credits: <a href="https://thegamesdb.net/" target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:text-blue-400">TheGamesDB</a> • 
-              <a href="https://www.upcitemdb.com/" target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:text-blue-400 ml-1">UPC Item DB</a>
+              <a href="https://www.igdb.com/" target="_blank" rel="noopener noreferrer" className="text-teal-500 hover:text-teal-400 ml-1">IGDB</a>
             </p>
           </div>
         </div>
+      </div>
       </div>
     </div>
   );

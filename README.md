@@ -1,4 +1,4 @@
-# 💾 SAVE SLOT
+﻿# ðŸ’¾ SAVE SLOT
 
 <div align="center">
 
@@ -8,42 +8,40 @@
 [![Tailwind CSS](https://img.shields.io/badge/Tailwind-CSS-06B6D4?style=for-the-badge&logo=tailwindcss&logoColor=white)](https://tailwindcss.com/)
 [![License](https://img.shields.io/badge/License-MIT-yellow?style=for-the-badge)](LICENSE)
 
-**A retro-styled video game collection manager with cloud sync** 🎮
+**A retro-styled video game collection manager with cloud sync** ðŸŽ®
 
-*Track your collection • Manage your wishlist • Never lose a game again*
+*Track your collection â€¢ Manage your wishlist â€¢ Never lose a game again*
 
-[✨ Features](#-features) • [🚀 Quick Start](#-quick-start) • [🛠️ Tech Stack](#️-tech-stack)
+[âœ¨ Features](#-features) â€¢ [ðŸš€ Quick Start](#-quick-start) â€¢ [ðŸ› ï¸ Tech Stack](#ï¸-tech-stack)
 
 </div>
 
 ---
 
-## 🎯 What is Save Slot?
+## ðŸŽ¯ What is Save Slot?
 
 Save Slot is a modern web application designed for video game collectors who want to:
 - **Track their collection** across 25+ gaming platforms
 - **Manage wishlists** for games they want to buy
 - **Sync data to the cloud** with real-time updates
-- **Search games easily** using TheGamesDB API
-- **Scan barcodes** with their camera or manually
+- **Search games easily** using IGDB or TheGamesDB APIs
 - **Export/Import** collections via CSV
 
-Built with a nostalgic 90s floppy disk aesthetic, Save Slot brings retro charm to modern game collecting! 💾
+Built with a nostalgic 90s floppy disk aesthetic, Save Slot brings retro charm to modern game collecting! ðŸ’¾
 
 ---
 
-## ✨ Features
+## âœ¨ Features
 
-### 🎮 Core Features
+### ðŸŽ® Core Features
 - **Multi-User Authentication** - Secure login system with per-user data isolation
 - **Cloud Sync** - Automatic sync to Supabase with offline fallback
 - **Dual Collections** - Separate "Collection" and "Wishlist" management
 - **25+ Consoles Supported** - PlayStation, Xbox, Nintendo, and retro systems
-- **Barcode Scanner** - Camera or manual entry for quick game addition
-- **API Integration** - Auto-fetch game covers and metadata from TheGamesDB
+- **API Integration** - Auto-fetch game covers and metadata from IGDB or TheGamesDB
 - **CSV Import/Export** - Bulk operations and data portability
 
-### 🎨 User Experience
+### ðŸŽ¨ User Experience
 - **Grid & List Views** - Toggle between card grid and detailed list
 - **Advanced Filtering** - Search by title, filter by console/version
 - **Statistics Dashboard** - Collection insights and breakdowns
@@ -51,7 +49,7 @@ Built with a nostalgic 90s floppy disk aesthetic, Save Slot brings retro charm t
 - **Real-time Sync Status** - Visual indicators (syncing/synced/error)
 - **Retro UI Theme** - Nostalgic floppy disk aesthetic with modern UX
 
-### ⚡ Performance
+### âš¡ Performance
 - **Optimized Rendering** - React.memo for game cards
 - **Debounced Saves** - 1-second delay prevents excessive DB writes
 - **Lazy Image Loading** - Fast initial page load
@@ -59,7 +57,7 @@ Built with a nostalgic 90s floppy disk aesthetic, Save Slot brings retro charm t
 
 ---
 
-## 🚀 Quick Start
+## ðŸš€ Quick Start
 
 ### Prerequisites
 - Node.js 18+ and npm
@@ -97,7 +95,6 @@ CREATE TABLE games (
   cover_url TEXT,
   release_date TEXT,
   api_id INTEGER,
-  barcode TEXT,
   is_wishlist BOOLEAN DEFAULT FALSE,
   added_date TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -140,7 +137,7 @@ INSERT INTO users (id, username, password) VALUES
   ('user-luigi', 'luigi', 'password456');
 ```
 
-> ⚠️ **Security Note:** Production apps should use bcrypt for password hashing!
+> âš ï¸ **Security Note:** Production apps should use bcrypt for password hashing!
 
 ### 4. Configure Environment Variables
 
@@ -157,10 +154,10 @@ Deploy the API proxy functions:
 
 ```bash
 npx supabase functions deploy tgdb
-npx supabase functions deploy barcode
+npx supabase functions deploy igdb
 ```
 
-> 💡 These functions proxy requests to TheGamesDB and UPC Item DB APIs
+> ðŸ’¡ These functions proxy requests to TheGamesDB and IGDB APIs
 
 ### 6. Run the Development Server
 
@@ -178,7 +175,7 @@ Use the test credentials:
 
 ---
 
-## 🛠️ Tech Stack
+## ðŸ› ï¸ Tech Stack
 
 ### Frontend
 - **[React 19](https://react.dev/)** - UI framework
@@ -190,37 +187,36 @@ Use the test credentials:
 - **[Supabase](https://supabase.com/)** - PostgreSQL database and auth
 - **[Supabase Edge Functions](https://supabase.com/docs/guides/functions)** - Serverless API proxies
 - **[TheGamesDB API](https://thegamesdb.net/)** - Game metadata and cover art
-- **[UPC Item DB](https://www.upcitemdb.com/)** - Barcode lookups
+- **[IGDB](https://www.igdb.com/)** - Game metadata, covers, franchises and series
 
 ### Additional Libraries
-- **[html5-qrcode](https://github.com/mebjas/html5-qrcode)** - Camera barcode scanning
 - **[React Hooks](https://react.dev/reference/react)** - State management (useState, useEffect, useMemo, useCallback)
 
 ---
 
-## 📁 Project Structure
+## ðŸ“ Project Structure
 
 ```
 save-slot/
-├── src/
-│   ├── App.jsx           # Main application component
-│   ├── supabase.js       # Supabase client configuration
-│   ├── main.jsx          # React entry point
-│   └── index.css         # Tailwind CSS imports
-├── public/               # Static assets
-├── supabase/
-│   └── functions/        # Edge Functions
-│       ├── tgdb/         # TheGamesDB API proxy
-│       └── barcode/      # Barcode lookup proxy
-├── .env                  # Environment variables (create this)
-├── package.json          # Dependencies
-├── vite.config.js        # Vite configuration
-└── tailwind.config.js    # Tailwind configuration
+â”œâ”€â”€ src/
+â”‚   â”œâ”€â”€ App.jsx           # Main application component
+â”‚   â”œâ”€â”€ supabase.js       # Supabase client configuration
+â”‚   â”œâ”€â”€ main.jsx          # React entry point
+â”‚   â””â”€â”€ index.css         # Tailwind CSS imports
+â”œâ”€â”€ public/               # Static assets
+â”œâ”€â”€ supabase/
+â”‚   â””â”€â”€ functions/        # Edge Functions
+â”‚       â”œâ”€â”€ tgdb/         # TheGamesDB API proxy
+│       └── igdb/         # IGDB API proxy
+â”œâ”€â”€ .env                  # Environment variables (create this)
+â”œâ”€â”€ package.json          # Dependencies
+â”œâ”€â”€ vite.config.js        # Vite configuration
+â””â”€â”€ tailwind.config.js    # Tailwind configuration
 ```
 
 ---
 
-## 🎮 Supported Consoles
+## ðŸŽ® Supported Consoles
 
 Save Slot supports **25 gaming platforms:**
 
@@ -272,7 +268,7 @@ Save Slot supports **25 gaming platforms:**
 
 ---
 
-## 🔑 Key Features Explained
+## ðŸ”‘ Key Features Explained
 
 ### Authentication System
 - Simple username/password authentication
@@ -288,7 +284,6 @@ Save Slot supports **25 gaming platforms:**
 
 ### Game Management
 - Add games via search (TheGamesDB API)
-- Add games via barcode scanning
 - Manual entry option
 - Edit game details with API cover search
 - Move games between collection/wishlist
@@ -302,19 +297,19 @@ Save Slot supports **25 gaming platforms:**
 
 ---
 
-## 🚦 Database Conventions
+## ðŸš¦ Database Conventions
 
 ### Snake Case Naming
 All database columns use `snake_case` (PostgreSQL convention):
 
 ```javascript
-// ✅ Correct
+// âœ… Correct
 game.cover_url
 game.added_date
 game.api_id
 game.release_date
 
-// ❌ Incorrect
+// âŒ Incorrect
 game.coverUrl
 game.addedDate
 ```
@@ -326,12 +321,7 @@ Example: `user-mario`, `user-luigi`
 
 ---
 
-## 🐛 Known Issues & Limitations
-
-### Barcode Scanner
-- **UPC Item DB** has poor coverage for video games
-- Fallback: Manual title entry → TheGamesDB search
-- **Solution:** Consider integrating IGDB API (requires OAuth)
+## ðŸ› Known Issues & Limitations
 
 ### Security
 - **Current:** Plain text passwords (development only)
@@ -343,7 +333,7 @@ Example: `user-mario`, `user-luigi`
 
 ---
 
-## 🛣️ Roadmap
+## ðŸ›£ï¸ Roadmap
 
 ### Planned Features
 - [ ] **Completion Status Tracking** - Mark games as playing/completed/backlog
@@ -359,33 +349,33 @@ Example: `user-mario`, `user-luigi`
 
 ---
 
-## 📝 License
+## ðŸ“ License
 
 This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) file for details.
 
 ---
 
-## 🙏 Acknowledgments
+## ðŸ™ Acknowledgments
 
 - **[TheGamesDB](https://thegamesdb.net/)** - Game metadata and cover art API
 - **[Supabase](https://supabase.com/)** - Backend infrastructure
 - **[Lucide](https://lucide.dev/)** - Beautiful open-source icons
 - **[Tailwind CSS](https://tailwindcss.com/)** - Styling framework
-- Inspired by retro floppy disk aesthetics 💾
+- Inspired by retro floppy disk aesthetics ðŸ’¾
 
-## 🌟 Star History
+## ðŸŒŸ Star History
 
-If you find Save Slot useful, please consider giving it a ⭐ on GitHub!
+If you find Save Slot useful, please consider giving it a â­ on GitHub!
 
 ---
 
 <div align="center">
 
-**Made with ❤️ by game collectors, for game collectors**
+**Made with â¤ï¸ by game collectors, for game collectors**
 
 [![GitHub stars](https://img.shields.io/github/stars/yourusername/save-slot?style=social)](https://github.com/yourusername/save-slot/stargazers)
 [![GitHub forks](https://img.shields.io/github/forks/yourusername/save-slot?style=social)](https://github.com/yourusername/save-slot/network/members)
 
-💾 **SAVE SLOT v2.0** 💾
+ðŸ’¾ **SAVE SLOT v2.0** ðŸ’¾
 
 </div>
