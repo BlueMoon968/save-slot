@@ -288,9 +288,21 @@ const sanitizeGameForStorage = (game) => {
 
 
 // Memoized Game Card Component
-const GameCard = React.memo(({ game, onEdit, onDelete, onMove, isWishlist }) => {
+const GameCard = React.memo(({ game, onOpen, onEdit, onDelete, onMove, isWishlist }) => {
   return (
-    <div className={`bg-slate-800 rounded-sm border-4 ${isWishlist ? 'border-purple-700 hover:border-purple-600' : 'border-slate-700 hover:border-slate-600'} overflow-hidden transition-all shadow-lg group`}>
+    <div
+      onClick={() => onOpen(game)}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          onOpen(game);
+        }
+      }}
+      role="button"
+      tabIndex={0}
+      aria-label={`Mostra dettagli di ${game.title}`}
+      className={`bg-slate-800 rounded-sm border-4 ${isWishlist ? 'border-purple-700 hover:border-purple-600' : 'border-slate-700 hover:border-slate-600'} overflow-hidden transition-all shadow-lg group cursor-pointer focus:outline-none focus:border-amber-500`}
+    >
       <div className="aspect-[3/4] bg-slate-900 relative overflow-hidden">
         {game.cover_url ? (
           <LazyImage src={game.cover_url} alt={game.title} className="w-full h-full object-cover" loading="lazy" />
@@ -310,19 +322,28 @@ const GameCard = React.memo(({ game, onEdit, onDelete, onMove, isWishlist }) => 
         )}
         <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-70 transition-all flex items-center justify-center gap-1 sm:gap-2 opacity-0 group-hover:opacity-100">
           <button
-            onClick={() => onEdit(game)}
+            onClick={(event) => {
+              event.stopPropagation();
+              onEdit(game);
+            }}
             className="p-1.5 sm:p-2 bg-blue-600 rounded-sm hover:bg-blue-700 transition-colors"
           >
             <Edit2 className="w-3 h-3 sm:w-4 sm:h-4" />
           </button>
           <button
-            onClick={() => onMove(game)}
+            onClick={(event) => {
+              event.stopPropagation();
+              onMove(game);
+            }}
             className={`p-1.5 sm:p-2 rounded-sm hover:opacity-90 transition-colors ${isWishlist ? 'bg-green-600' : 'bg-purple-600'}`}
           >
             {isWishlist ? <Star className="w-3 h-3 sm:w-4 sm:h-4" /> : <Heart className="w-3 h-3 sm:w-4 sm:h-4" />}
           </button>
           <button
-            onClick={() => onDelete(game.id)}
+            onClick={(event) => {
+              event.stopPropagation();
+              onDelete(game.id);
+            }}
             className="p-1.5 sm:p-2 bg-red-600 rounded-sm hover:bg-red-700 transition-colors"
           >
             <Trash2 className="w-3 h-3 sm:w-4 sm:h-4" />
@@ -356,6 +377,10 @@ function App() {
   const [sortOrder, setSortOrder] = useState('title');
   const [showAddModal, setShowAddModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
+  const [selectedGameDetails, setSelectedGameDetails] = useState(null);
+  const [isLoadingGameDetails, setIsLoadingGameDetails] = useState(false);
+  const [gameDetailsError, setGameDetailsError] = useState('');
+  const gameDetailsRequestRef = useRef(0);
   const [showSeriesModal, setShowSeriesModal] = useState(false);
   const [seriesQuery, setSeriesQuery] = useState('');
   const [seriesResults, setSeriesResults] = useState([]);
@@ -1072,6 +1097,63 @@ const saveToSupabase = useCallback(async (gamesData, wishlistData) => {
       throw new Error(`IGDB: ${data.message || data.title || JSON.stringify(data)}`);
     }
     return data;
+  };
+
+  const openGameDetails = async (game) => {
+    const requestId = ++gameDetailsRequestRef.current;
+    setSelectedGameDetails({ game, details: null });
+    setIsLoadingGameDetails(true);
+    setGameDetailsError('');
+
+    try {
+      const results = await igdbQuery('games', `
+        search "${escapeIGDBString(game.title)}";
+        fields name, summary, storyline, first_release_date, rating, rating_count,
+          aggregated_rating, total_rating, genres.name, themes.name, game_modes.name,
+          player_perspectives.name, involved_companies.company.name,
+          involved_companies.developer, involved_companies.publisher,
+          platforms.name, platforms.abbreviation, cover.url, screenshots.url,
+          videos.name, videos.video_id, url;
+        limit 20;
+      `);
+
+      if (!Array.isArray(results) || results.length === 0) {
+        throw new Error('Nessun dettaglio trovato su IGDB per questo titolo.');
+      }
+
+      const candidates = results.map(result => {
+        const mappedPlatforms = (result.platforms || [])
+          .map(mapIGDBPlatformToConsole)
+          .filter(Boolean);
+        return {
+          ...result,
+          cover_url: igdbCoverUrl(result.cover),
+          _consoleShortName: mappedPlatforms.find(platform => platform.name === game.console)?.name ||
+            mappedPlatforms[0]?.name || ''
+        };
+      });
+      const bestMatch = sortByBestGameMatch(candidates, game.title, game.console)[0];
+
+      if (gameDetailsRequestRef.current === requestId) {
+        setSelectedGameDetails({ game, details: bestMatch });
+      }
+    } catch (error) {
+      console.error('[Game Details] IGDB error:', error);
+      if (gameDetailsRequestRef.current === requestId) {
+        setGameDetailsError(error.message || 'Impossibile caricare i dettagli in questo momento.');
+      }
+    } finally {
+      if (gameDetailsRequestRef.current === requestId) {
+        setIsLoadingGameDetails(false);
+      }
+    }
+  };
+
+  const closeGameDetails = () => {
+    gameDetailsRequestRef.current += 1;
+    setSelectedGameDetails(null);
+    setIsLoadingGameDetails(false);
+    setGameDetailsError('');
   };
 
   const igdbSearchGames = async (query) => {
@@ -2000,13 +2082,18 @@ const addGame = () => {
         <GameCard
           key={game.id}
           game={game}
+          onOpen={openGameDetails}
           onEdit={startEdit}
           onDelete={deleteGame}
           onMove={moveToWishlist}
           isWishlist={false}
         />
       ) : (
-        <div key={game.id} className="bg-slate-800 rounded-sm border-4 border-slate-700 hover:border-slate-600 p-4 transition-all shadow-lg flex items-center gap-4">
+        <div
+          key={game.id}
+          onClick={() => openGameDetails(game)}
+          className="bg-slate-800 rounded-sm border-4 border-slate-700 hover:border-slate-600 p-4 transition-all shadow-lg flex items-center gap-4 cursor-pointer"
+        >
           <div className="w-16 h-24 bg-slate-900 rounded overflow-hidden flex-shrink-0">
             {game.cover_url ? (
               <LazyImage src={game.cover_url} alt={game.title} className="w-full h-full object-cover" loading="lazy" />
@@ -2031,19 +2118,28 @@ const addGame = () => {
           </div>
           <div className="flex gap-2 flex-shrink-0">
             <button
-              onClick={() => startEdit(game, false)}
+              onClick={(event) => {
+                event.stopPropagation();
+                startEdit(game, false);
+              }}
               className="p-2 bg-blue-600 rounded-sm hover:bg-blue-700 transition-colors"
             >
               <Edit2 className="w-4 h-4" />
             </button>
             <button
-              onClick={() => moveToWishlist(game)}
+              onClick={(event) => {
+                event.stopPropagation();
+                moveToWishlist(game);
+              }}
               className="p-2 bg-purple-600 rounded-sm hover:bg-purple-700 transition-colors"
             >
               <Heart className="w-4 h-4" />
             </button>
             <button
-              onClick={() => deleteGame(game.id, false)}
+              onClick={(event) => {
+                event.stopPropagation();
+                deleteGame(game.id, false);
+              }}
               className="p-2 bg-red-600 rounded-sm hover:bg-red-700 transition-colors"
             >
               <Trash2 className="w-4 h-4" />
@@ -2083,13 +2179,18 @@ const addGame = () => {
         <GameCard
           key={game.id}
           game={game}
+          onOpen={openGameDetails}
           onEdit={(g) => startEdit(g, true)}
           onDelete={(id) => deleteGame(id, true)}
           onMove={moveToCollection}
           isWishlist={true}
         />
       ) : (
-        <div key={game.id} className="bg-slate-800 rounded-sm border-4 border-purple-700 hover:border-purple-600 p-4 transition-all shadow-lg flex items-center gap-4">
+        <div
+          key={game.id}
+          onClick={() => openGameDetails(game)}
+          className="bg-slate-800 rounded-sm border-4 border-purple-700 hover:border-purple-600 p-4 transition-all shadow-lg flex items-center gap-4 cursor-pointer"
+        >
           <div className="w-16 h-24 bg-slate-900 rounded overflow-hidden flex-shrink-0 relative">
             {game.cover_url ? (
               <LazyImage src={game.cover_url} alt={game.title} className="w-full h-full object-cover" loading="lazy" />
@@ -2117,19 +2218,28 @@ const addGame = () => {
           </div>
           <div className="flex gap-2 flex-shrink-0">
             <button
-              onClick={() => startEdit(game, true)}
+              onClick={(event) => {
+                event.stopPropagation();
+                startEdit(game, true);
+              }}
               className="p-2 bg-blue-600 rounded-sm hover:bg-blue-700 transition-colors"
             >
               <Edit2 className="w-4 h-4" />
             </button>
             <button
-              onClick={() => moveToCollection(game)}
+              onClick={(event) => {
+                event.stopPropagation();
+                moveToCollection(game);
+              }}
               className="p-2 bg-green-600 rounded-sm hover:bg-green-700 transition-colors"
             >
               <Star className="w-4 h-4" />
             </button>
             <button
-              onClick={() => deleteGame(game.id, true)}
+              onClick={(event) => {
+                event.stopPropagation();
+                deleteGame(game.id, true);
+              }}
               className="p-2 bg-red-600 rounded-sm hover:bg-red-700 transition-colors"
             >
               <Trash2 className="w-4 h-4" />
@@ -2700,6 +2810,183 @@ const addGame = () => {
             </div>
           </div>
         )}
+      {/* Live Game Details Modal - data is fetched from IGDB and never persisted */}
+      {selectedGameDetails && (() => {
+        const { game, details } = selectedGameDetails;
+        const releaseDate = details?.first_release_date
+          ? new Date(details.first_release_date * 1000).toLocaleDateString('it-IT', {
+              day: '2-digit', month: 'long', year: 'numeric'
+            })
+          : game.release_date || 'Non disponibile';
+        const companies = details?.involved_companies || [];
+        const developers = companies
+          .filter(company => company.developer)
+          .map(company => company.company?.name)
+          .filter(Boolean);
+        const publishers = companies
+          .filter(company => company.publisher)
+          .map(company => company.company?.name)
+          .filter(Boolean);
+        const rating = details?.total_rating ?? details?.aggregated_rating ?? details?.rating;
+        const screenshot = details?.screenshots?.[0]?.url
+          ? `https:${details.screenshots[0].url.replace('t_thumb', 't_screenshot_big')}`
+          : '';
+        const cover = details?.cover_url || game.cover_url;
+
+        return (
+          <div
+            className="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center p-3 sm:p-4 z-50 overflow-y-auto"
+            onClick={closeGameDetails}
+          >
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="game-details-title"
+              className="bg-slate-800 rounded-sm max-w-4xl w-full border-4 border-amber-600 shadow-2xl relative max-h-[92vh] overflow-y-auto my-4"
+              onClick={(event) => event.stopPropagation()}
+            >
+              {screenshot && (
+                <div className="h-36 sm:h-56 overflow-hidden border-b-4 border-slate-700">
+                  <img src={screenshot} alt="" className="w-full h-full object-cover opacity-50" />
+                </div>
+              )}
+
+              <button
+                onClick={closeGameDetails}
+                className="absolute top-3 right-3 p-2 bg-slate-900 bg-opacity-90 hover:bg-slate-700 rounded-sm border-2 border-slate-600 z-10"
+                aria-label="Chiudi dettagli"
+              >
+                <X className="w-5 h-5" />
+              </button>
+
+              <div className="p-4 sm:p-6">
+                <div className="flex flex-col sm:flex-row gap-5">
+                  <div className="w-32 h-44 sm:w-44 sm:h-60 bg-slate-900 rounded-sm overflow-hidden border-4 border-slate-700 flex-shrink-0 mx-auto sm:mx-0">
+                    {cover ? (
+                      <img src={cover} alt={game.title} className="w-full h-full object-cover" />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center">
+                        <Gamepad2 className="w-14 h-14 text-slate-700" />
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex-1 min-w-0">
+                    <div className="pr-10">
+                      <p className="text-amber-400 text-xs font-bold font-mono mb-2">
+                        LIVE FROM IGDB • NOT SAVED
+                      </p>
+                      <h2 id="game-details-title" className="text-2xl sm:text-3xl font-black text-white font-mono">
+                        {details?.name || game.title}
+                      </h2>
+                      <p className="text-slate-400 font-mono text-sm mt-1">
+                        {CONSOLE_ICONS[game.console]} {game.console} {game.version ? `• ${game.version}` : ''}
+                      </p>
+                    </div>
+
+                    {isLoadingGameDetails && (
+                      <div className="mt-8 flex items-center gap-3 text-amber-400 font-mono">
+                        <RefreshCw className="w-5 h-5 animate-spin" />
+                        Caricamento informazioni da IGDB...
+                      </div>
+                    )}
+
+                    {gameDetailsError && (
+                      <div className="mt-6 p-4 bg-red-950 border-2 border-red-700 rounded-sm">
+                        <p className="text-red-300 font-mono text-sm">{gameDetailsError}</p>
+                        <button
+                          onClick={() => openGameDetails(game)}
+                          className="mt-3 px-4 py-2 bg-red-700 hover:bg-red-600 border-2 border-red-500 rounded-sm font-bold font-mono text-sm"
+                        >
+                          RIPROVA
+                        </button>
+                      </div>
+                    )}
+
+                    {details && !isLoadingGameDetails && (
+                      <>
+                        <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 mt-5">
+                          <div className="bg-slate-900 p-3 border-2 border-slate-700 rounded-sm">
+                            <p className="text-slate-500 text-xs font-mono">USCITA</p>
+                            <p className="text-white text-sm font-bold mt-1">{releaseDate}</p>
+                          </div>
+                          <div className="bg-slate-900 p-3 border-2 border-slate-700 rounded-sm">
+                            <p className="text-slate-500 text-xs font-mono">VALUTAZIONE</p>
+                            <p className="text-white text-sm font-bold mt-1">
+                              {rating != null ? `${Math.round(rating)}/100` : 'Non disponibile'}
+                            </p>
+                          </div>
+                          <div className="bg-slate-900 p-3 border-2 border-slate-700 rounded-sm col-span-2 lg:col-span-1">
+                            <p className="text-slate-500 text-xs font-mono">SVILUPPATORE</p>
+                            <p className="text-white text-sm font-bold mt-1">
+                              {developers.join(', ') || 'Non disponibile'}
+                            </p>
+                          </div>
+                        </div>
+
+                        {(details.summary || details.storyline) && (
+                          <div className="mt-5">
+                            <h3 className="text-amber-400 font-bold font-mono text-sm mb-2">DESCRIZIONE</h3>
+                            <p className="text-slate-300 leading-relaxed text-sm">
+                              {details.summary || details.storyline}
+                            </p>
+                          </div>
+                        )}
+
+                        {details.genres?.length > 0 && (
+                          <div className="mt-5 flex flex-wrap gap-2">
+                            {details.genres.map(genre => (
+                              <span key={genre.name} className="px-2 py-1 bg-amber-900 text-amber-200 border border-amber-700 rounded-sm text-xs font-mono">
+                                {genre.name}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+
+                        <div className="mt-5 space-y-2 text-sm">
+                          {publishers.length > 0 && (
+                            <p><span className="text-slate-500 font-mono">Publisher:</span> {publishers.join(', ')}</p>
+                          )}
+                          {details.game_modes?.length > 0 && (
+                            <p><span className="text-slate-500 font-mono">Modalità:</span> {details.game_modes.map(mode => mode.name).join(', ')}</p>
+                          )}
+                          {details.platforms?.length > 0 && (
+                            <p><span className="text-slate-500 font-mono">Piattaforme:</span> {details.platforms.map(platform => platform.abbreviation || platform.name).join(', ')}</p>
+                          )}
+                        </div>
+
+                        <div className="flex flex-wrap gap-3 mt-6">
+                          {details.url && (
+                            <a
+                              href={details.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="px-4 py-2 bg-amber-700 hover:bg-amber-600 border-2 border-amber-500 rounded-sm font-bold font-mono text-sm"
+                            >
+                              APRI SU IGDB
+                            </a>
+                          )}
+                          {details.videos?.[0]?.video_id && (
+                            <a
+                              href={`https://www.youtube.com/watch?v=${details.videos[0].video_id}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="px-4 py-2 bg-red-700 hover:bg-red-600 border-2 border-red-500 rounded-sm font-bold font-mono text-sm"
+                            >
+                              TRAILER
+                            </a>
+                          )}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Series Tracker Modal */}
       {showSeriesModal && (() => {
         const normalize = (s) => normalizeGameTitle(s);
